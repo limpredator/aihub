@@ -9,7 +9,7 @@ function required(name: string): string {
 export const config = {
   sip: {
     proxyHost: process.env.SIP_PROXY_HOST || "pbx.cerdik.co",
-    proxyWssPort: Number(process.env.SIP_PROXY_WSS_PORT || 8443),
+    proxyTlsPort: Number(process.env.SIP_PROXY_TLS_PORT || 5061),
     extension: process.env.SIP_EXTENSION || "",
     password: process.env.SIP_PASSWORD || "",
   },

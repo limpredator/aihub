@@ -13,13 +13,20 @@ through the Kamailio proxy / rtpengine, same as the existing softphone app.
 
 ## Status
 
-Scaffold only. Not yet able to take a real call. Two things block that:
+Scaffold only. Not yet able to take a real call. What's blocking that:
 
-1. **SIP signaling + media** (`src/sip/sipClient.ts`) — connects to the
-   proxy but doesn't complete REGISTER (no digest-auth handling) and has no
-   media path. Needs a decision: a Node WebRTC stack to match how softhone's
-   browser/Windows clients register, or a plain SIP/TLS + raw RTP path like
-   the native Linphone clients. See the comment in that file.
+1. **SIP media** (`src/sip/sipClient.ts`) — registration (REGISTER + digest
+   auth) is implemented against RFC 3261/2617, but untested end-to-end: it
+   needs a provisioned `SIP_EXTENSION`/`SIP_PASSWORD` and ring group
+   membership on the PBX side before it can be exercised for real. There's
+   also no INVITE/media handling yet — once registration is confirmed live,
+   the next piece is accepting an INVITE and sending/receiving RTP (G.711 —
+   no library needed, it's a simple codec to implement in pure JS).
+
+   Decision made: plain SIP/TLS (port 5061), the same transport the native
+   Linphone clients already use against this proxy in production — not WSS,
+   which would imply WebRTC media (ICE/DTLS-SRTP) and a native Node WebRTC
+   stack for no benefit here.
 2. **Realtime STT** (`src/stt/speechmatics.ts`) — targets Speechmatics'
    realtime endpoint with `melia-1`, unverified. The transcriptor app only
    exercises their batch job API; confirm the realtime endpoint actually
