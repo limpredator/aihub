@@ -1,41 +1,65 @@
 import { connect, type TLSSocket } from "node:tls";
+import { EventEmitter } from "node:events";
 import { config } from "../config.js";
 import {
   buildRegister,
   parseResponse,
+  parseRequest,
+  buildResponse,
   parseDigestChallenge,
   buildAuthorizationHeader,
   generateCallId,
   generateTag,
   generateBranch,
+  SipStreamFramer,
+  type ParsedRequest,
 } from "./sipMessage.js";
 
 // Registers over plain SIP/TLS (port 5061) — the same transport the native
 // Linphone clients (iPhone/tablet) already use against this proxy in
 // production. Deliberately not WSS: that path implies WebRTC media
 // (ICE/DTLS-SRTP), which would need a native Node WebRTC stack for no
-// benefit here. Media (RTP/G.711) is not implemented yet — this file only
-// gets the registration half working.
+// benefit here.
 //
 // UNVERIFIED end-to-end: written correctly against RFC 3261/2617, but not
 // yet tested against the real proxy — needs a provisioned SIP_EXTENSION/
 // SIP_PASSWORD and ring group membership on the PBX side first.
 //
-// Known simplification: each response is read from a single "data" event,
-// which assumes the whole SIP message arrives in one TCP/TLS chunk. That
-// usually holds for a REGISTER response (no SDP body) but isn't guaranteed
-// — a production version should buffer until it sees the \r\n\r\n header
-// terminator (and respect Content-Length) rather than trusting chunk
-// boundaries.
+// After registering, the socket is kept open and fed through
+// SipStreamFramer so an inbound INVITE's SDP body can't be lost to the
+// "one data event = one message" assumption the registration handshake
+// got away with (REGISTER/its responses carry no body).
 
 export type SipRegistrationState = "unregistered" | "registering" | "registered" | "failed";
 
-export class SipClient {
+export interface IncomingCall {
+  callId: string;
+  remoteSdp: string;
+  /** Answers the call: sends 200 OK with the given local SDP. */
+  answer(localSdp: string): void;
+  /** Rejects the call with a non-2xx final response (default 486 Busy Here). */
+  reject(status?: number, reason?: string): void;
+}
+
+export declare interface SipClient {
+  on(event: "invite", listener: (call: IncomingCall) => void): this;
+  on(event: "bye", listener: (callId: string) => void): this;
+  emit(event: "invite", call: IncomingCall): boolean;
+  emit(event: "bye", callId: string): boolean;
+}
+
+export class SipClient extends EventEmitter {
   private socket: TLSSocket | null = null;
   private state: SipRegistrationState = "unregistered";
+  private framer = new SipStreamFramer();
 
   getState(): SipRegistrationState {
     return this.state;
+  }
+
+  /** The local address of the registered TLS socket — used as the SDP answer's connection address. */
+  getLocalAddress(): string {
+    return this.socket?.localAddress ?? "0.0.0.0";
   }
 
   async register(): Promise<void> {
@@ -71,8 +95,15 @@ export class SipClient {
           this.socket.once("data", (chunk) => {
             const challengeResponse = parseResponse(chunk.toString());
             if (challengeResponse.status !== 401 && challengeResponse.status !== 407) {
-              this.state = challengeResponse.status === 200 ? "registered" : "failed";
-              return challengeResponse.status === 200 ? resolve() : reject(new Error(`REGISTER failed: ${challengeResponse.status} ${challengeResponse.reason}`));
+              if (challengeResponse.status === 200) {
+                this.state = "registered";
+                this.attachPersistentListener();
+                resolve();
+              } else {
+                this.state = "failed";
+                reject(new Error(`REGISTER failed: ${challengeResponse.status} ${challengeResponse.reason}`));
+              }
+              return;
             }
 
             const authHeaderName = challengeResponse.status === 401 ? "www-authenticate" : "proxy-authenticate";
@@ -104,6 +135,7 @@ export class SipClient {
               const finalResponse = parseResponse(finalChunk.toString());
               if (finalResponse.status === 200) {
                 this.state = "registered";
+                this.attachPersistentListener();
                 resolve();
               } else {
                 this.state = "failed";
@@ -119,6 +151,83 @@ export class SipClient {
         reject(err);
       });
     });
+  }
+
+  /** After registration, keep listening for inbound requests (INVITE/ACK/BYE) using proper framing. */
+  private attachPersistentListener(): void {
+    if (!this.socket) return;
+    this.socket.removeAllListeners("data");
+    this.socket.on("data", (chunk) => {
+      for (const raw of this.framer.push(chunk)) {
+        this.handleInboundMessage(raw);
+      }
+    });
+  }
+
+  private handleInboundMessage(raw: string): void {
+    // Responses to requests we sent start with "SIP/2.0"; everything else
+    // is an incoming request from the proxy (INVITE, ACK, BYE, ...).
+    if (raw.startsWith("SIP/2.0")) return;
+
+    let request: ParsedRequest;
+    try {
+      request = parseRequest(raw);
+    } catch {
+      return;
+    }
+
+    switch (request.method) {
+      case "INVITE":
+        this.handleInvite(request);
+        break;
+      case "ACK":
+        // UAS never ACKs its own 200 OK — this is the caller's ACK to
+        // ours, and it needs no reply. Silently consumed.
+        break;
+      case "BYE":
+        this.handleBye(request);
+        break;
+      default:
+        break;
+    }
+  }
+
+  private handleInvite(request: ParsedRequest): void {
+    const callId = request.headers["call-id"] ?? generateCallId();
+    const localTag = generateTag();
+    let answered = false;
+
+    const call: IncomingCall = {
+      callId,
+      remoteSdp: request.body,
+      answer: (localSdp: string) => {
+        if (answered) return;
+        answered = true;
+        const response = buildResponse({
+          status: 200,
+          reason: "OK",
+          request,
+          localTag,
+          contact: `sip:${config.sip.extension}@${this.socket?.localAddress ?? "0.0.0.0"}:${this.socket?.localPort ?? 0}`,
+          body: localSdp,
+        });
+        this.socket?.write(response);
+      },
+      reject: (status = 486, reason = "Busy Here") => {
+        if (answered) return;
+        answered = true;
+        const response = buildResponse({ status, reason, request, localTag });
+        this.socket?.write(response);
+      },
+    };
+
+    this.emit("invite", call);
+  }
+
+  private handleBye(request: ParsedRequest): void {
+    const response = buildResponse({ status: 200, reason: "OK", request });
+    this.socket?.write(response);
+    this.emit("bye", request.headers["call-id"] ?? "");
   }
 
   deregister(): void {

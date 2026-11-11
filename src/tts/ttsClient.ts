@@ -8,7 +8,7 @@ export interface TtsClient {
 }
 
 export class UnconfiguredTtsClient implements TtsClient {
-  async synthesize(): Promise<Buffer> {
+  async synthesize(_text: string, _language: "en" | "ms" | "cmn"): Promise<Buffer> {
     throw new Error("No TTS_PROVIDER configured — pick a vendor (see .env.example) before taking live calls.");
   }
 }

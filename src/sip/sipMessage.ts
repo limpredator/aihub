@@ -121,3 +121,95 @@ export function parseResponse(raw: string): ParsedResponse {
   }
   return { status: Number(match[1]), reason: match[2], headers };
 }
+
+export interface ParsedRequest {
+  method: string;
+  uri: string;
+  headers: Record<string, string>;
+  body: string;
+}
+
+/** Parses a SIP request's start line, headers, and body (e.g. an incoming INVITE/ACK/BYE). */
+export function parseRequest(raw: string): ParsedRequest {
+  const headerEnd = raw.indexOf("\r\n\r\n");
+  const headerPart = headerEnd === -1 ? raw : raw.slice(0, headerEnd);
+  const body = headerEnd === -1 ? "" : raw.slice(headerEnd + 4);
+
+  const [startLine, ...headerLines] = headerPart.split("\r\n");
+  const match = startLine.match(/^([A-Z]+) (\S+) SIP\/2\.0$/);
+  if (!match) throw new Error(`Not a SIP request line: ${startLine}`);
+
+  const headers: Record<string, string> = {};
+  for (const line of headerLines) {
+    if (!line.trim()) continue;
+    const idx = line.indexOf(":");
+    if (idx === -1) continue;
+    headers[line.slice(0, idx).trim().toLowerCase()] = line.slice(idx + 1).trim();
+  }
+  return { method: match[1], uri: match[2], headers, body };
+}
+
+/** Builds a SIP response, echoing the request's dialog headers, with an optional body. */
+export function buildResponse(opts: {
+  status: number;
+  reason: string;
+  request: ParsedRequest;
+  localTag?: string;
+  contact?: string;
+  body?: string;
+  contentType?: string;
+}): string {
+  const { status, reason, request, body = "", contentType = "application/sdp" } = opts;
+
+  let toHeader = request.headers["to"] ?? "";
+  if (opts.localTag && !toHeader.includes("tag=")) {
+    toHeader = `${toHeader};tag=${opts.localTag}`;
+  }
+
+  const lines = [
+    `SIP/2.0 ${status} ${reason}`,
+    `Via: ${request.headers["via"]}`,
+    `From: ${request.headers["from"]}`,
+    `To: ${toHeader}`,
+    `Call-ID: ${request.headers["call-id"]}`,
+    `CSeq: ${request.headers["cseq"]}`,
+  ];
+  if (opts.contact) lines.push(`Contact: <${opts.contact}>`);
+  if (body) lines.push(`Content-Type: ${contentType}`);
+  lines.push(`Content-Length: ${Buffer.byteLength(body)}`, "", body);
+  return lines.join("\r\n");
+}
+
+/**
+ * Buffers a TLS/TCP byte stream into complete SIP messages, using the
+ * \r\n\r\n header terminator plus Content-Length to find each message's
+ * end — unlike assuming one "data" event is one message (not safe once a
+ * body, e.g. INVITE's SDP, can split across TCP segments or several
+ * messages can arrive coalesced in one segment).
+ */
+export class SipStreamFramer {
+  private buffer = "";
+
+  /** Feeds newly-received bytes; returns zero or more complete raw SIP messages. */
+  push(chunk: Buffer | string): string[] {
+    this.buffer += chunk.toString();
+    const messages: string[] = [];
+
+    for (;;) {
+      const headerEnd = this.buffer.indexOf("\r\n\r\n");
+      if (headerEnd === -1) break;
+
+      const headerPart = this.buffer.slice(0, headerEnd);
+      const contentLengthMatch = headerPart.match(/^content-length:\s*(\d+)\s*$/im);
+      const contentLength = contentLengthMatch ? Number(contentLengthMatch[1]) : 0;
+
+      const messageEnd = headerEnd + 4 + contentLength;
+      if (this.buffer.length < messageEnd) break;
+
+      messages.push(this.buffer.slice(0, messageEnd));
+      this.buffer = this.buffer.slice(messageEnd);
+    }
+
+    return messages;
+  }
+}
