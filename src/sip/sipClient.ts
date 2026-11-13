@@ -6,11 +6,14 @@ import {
   parseResponse,
   parseRequest,
   buildResponse,
+  buildDialogRequest,
   parseDigestChallenge,
   buildAuthorizationHeader,
   generateCallId,
   generateTag,
   generateBranch,
+  extractUri,
+  extractCallerId,
   SipStreamFramer,
   type ParsedRequest,
 } from "./sipMessage.js";
@@ -35,10 +38,18 @@ export type SipRegistrationState = "unregistered" | "registering" | "registered"
 export interface IncomingCall {
   callId: string;
   remoteSdp: string;
+  /** The caller's number/user part, extracted from the From header. */
+  callerId: string;
   /** Answers the call: sends 200 OK with the given local SDP. */
   answer(localSdp: string): void;
   /** Rejects the call with a non-2xx final response (default 486 Busy Here). */
   reject(status?: number, reason?: string): void;
+}
+
+interface Dialog {
+  request: ParsedRequest;
+  localTag: string;
+  cseq: number;
 }
 
 export declare interface SipClient {
@@ -52,6 +63,7 @@ export class SipClient extends EventEmitter {
   private socket: TLSSocket | null = null;
   private state: SipRegistrationState = "unregistered";
   private framer = new SipStreamFramer();
+  private dialogs = new Map<string, Dialog>();
 
   getState(): SipRegistrationState {
     return this.state;
@@ -197,9 +209,12 @@ export class SipClient extends EventEmitter {
     const localTag = generateTag();
     let answered = false;
 
+    this.dialogs.set(callId, { request, localTag, cseq: 1 });
+
     const call: IncomingCall = {
       callId,
       remoteSdp: request.body,
+      callerId: extractCallerId(request.headers["from"] ?? ""),
       answer: (localSdp: string) => {
         if (answered) return;
         answered = true;
@@ -216,6 +231,7 @@ export class SipClient extends EventEmitter {
       reject: (status = 486, reason = "Busy Here") => {
         if (answered) return;
         answered = true;
+        this.dialogs.delete(callId);
         const response = buildResponse({ status, reason, request, localTag });
         this.socket?.write(response);
       },
@@ -225,14 +241,57 @@ export class SipClient extends EventEmitter {
   }
 
   private handleBye(request: ParsedRequest): void {
+    const callId = request.headers["call-id"] ?? "";
     const response = buildResponse({ status: 200, reason: "OK", request });
     this.socket?.write(response);
-    this.emit("bye", request.headers["call-id"] ?? "");
+    this.dialogs.delete(callId);
+    this.emit("bye", callId);
+  }
+
+  /** Sends an in-dialog request (BYE/REFER) to the caller using the dialog recorded at INVITE time. */
+  private sendInDialog(callId: string, method: string, extraHeaders?: string[], body?: string): boolean {
+    const dialog = this.dialogs.get(callId);
+    if (!dialog || !this.socket) return false;
+
+    dialog.cseq += 1;
+    const { request, localTag } = dialog;
+    const remoteUri = extractUri(request.headers["contact"] ?? request.headers["from"] ?? "");
+    const ourAor = extractUri(request.headers["to"] ?? "");
+
+    const message = buildDialogRequest({
+      method,
+      requestUri: remoteUri,
+      from: `<${ourAor}>;tag=${localTag}`,
+      to: request.headers["from"] ?? "",
+      callId,
+      cseq: dialog.cseq,
+      localAddress: this.socket.localAddress ?? "0.0.0.0",
+      localPort: this.socket.localPort ?? 0,
+      branch: generateBranch(),
+      extraHeaders,
+      body,
+    });
+    this.socket.write(message);
+    return true;
+  }
+
+  /** Hangs up an active call we answered (sends BYE). */
+  hangupCall(callId: string): boolean {
+    const sent = this.sendInDialog(callId, "BYE");
+    if (sent) this.dialogs.delete(callId);
+    return sent;
+  }
+
+  /** Blind-transfers an active call to another extension on the same proxy (sends REFER). */
+  transferCall(callId: string, targetExtension: string): boolean {
+    const referTo = `sip:${targetExtension}@${config.sip.proxyHost}`;
+    return this.sendInDialog(callId, "REFER", [`Refer-To: <${referTo}>`]);
   }
 
   deregister(): void {
     this.socket?.destroy();
     this.socket = null;
     this.state = "unregistered";
+    this.dialogs.clear();
   }
 }

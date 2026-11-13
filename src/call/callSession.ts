@@ -26,8 +26,8 @@ export function attachCallHandling(sip: SipClient, store: CallRecordStore): void
 }
 
 async function handleInvite(sip: SipClient, call: IncomingCall, store: CallRecordStore): Promise<void> {
-  console.log(`[call ${call.callId}] incoming INVITE`);
-  await store.create({ callId: call.callId, caller: "unknown", startedAt: new Date() });
+  console.log(`[call ${call.callId}] incoming INVITE from ${call.callerId}`);
+  await store.create({ callId: call.callId, caller: call.callerId, startedAt: new Date() });
 
   const remote = parseOffer(call.remoteSdp);
   const rtp = new RtpSession({ localPort: 0, remoteAddress: remote.address, remotePort: remote.port });
@@ -37,12 +37,30 @@ async function handleInvite(sip: SipClient, call: IncomingCall, store: CallRecor
 
   const messages: ChatMessage[] = [{ role: "system", content: buildSystemPrompt(config.ringGroup.extensions) }];
 
+  // Guards against double cleanup when both a BYE and a tool-call/fail-open
+  // path try to tear down the same call.
+  let ended = false;
+  const endMedia = () => {
+    if (ended) return;
+    ended = true;
+    rtp.close();
+    stt.close();
+  };
+
   const stt = new SpeechmaticsRealtimeClient();
   await stt.connect(async (partial) => {
-    if (!partial.isFinal || !partial.text.trim()) return;
+    if (!partial.isFinal || !partial.text.trim() || ended) return;
 
     messages.push({ role: "user", content: partial.text });
-    const turn = await runTurn(messages);
+
+    let turn: Awaited<ReturnType<typeof runTurn>>;
+    try {
+      turn = await runTurn(messages);
+    } catch (err) {
+      console.error(`[call ${call.callId}] LLM turn failed, falling back to human:`, err);
+      failOpen(sip, call, store, endMedia);
+      return;
+    }
 
     if (turn.reply) {
       messages.push({ role: "assistant", content: turn.reply });
@@ -56,24 +74,77 @@ async function handleInvite(sip: SipClient, call: IncomingCall, store: CallRecor
 
     for (const toolCall of turn.toolCalls) {
       console.log(`[call ${call.callId}] tool call: ${toolCall.function.name}(${toolCall.function.arguments})`);
-      if (toolCall.function.name === "end_call") {
-        rtp.close();
-        stt.close();
-      }
+      handleToolCall(sip, call, store, endMedia, toolCall);
     }
   });
 
   rtp.on("audio", (mulawPayload: Buffer) => {
+    if (ended) return;
     const pcm16 = decodeMulaw(mulawPayload);
     stt.sendAudio(Buffer.from(pcm16.buffer, pcm16.byteOffset, pcm16.byteLength));
   });
 
   sip.once("bye", (byeCallId) => {
     if (byeCallId !== call.callId) return;
-    rtp.close();
-    stt.close();
+    endMedia();
     store.update(call.callId, { endedAt: new Date(), outcome: "hangup" }).catch(() => {});
   });
+}
+
+function handleToolCall(
+  sip: SipClient,
+  call: IncomingCall,
+  store: CallRecordStore,
+  endMedia: () => void,
+  toolCall: { function: { name: string; arguments: string } },
+): void {
+  let args: Record<string, unknown> = {};
+  try {
+    args = JSON.parse(toolCall.function.arguments || "{}");
+  } catch {
+    // malformed arguments from the model — proceed with defaults rather than crashing the call
+  }
+
+  switch (toolCall.function.name) {
+    case "route_to_extension": {
+      const extension = String(args.extension ?? "");
+      if (!extension) break;
+      sip.transferCall(call.callId, extension);
+      endMedia();
+      store.update(call.callId, { outcome: "routed", routedTo: extension }).catch(() => {});
+      break;
+    }
+    case "transfer_to_human": {
+      failOpen(sip, call, store, endMedia);
+      break;
+    }
+    case "take_message": {
+      store.update(call.callId, { outcome: "message_taken", transcript: String(args.message ?? "") }).catch(() => {});
+      sip.hangupCall(call.callId);
+      endMedia();
+      break;
+    }
+    case "end_call": {
+      sip.hangupCall(call.callId);
+      endMedia();
+      break;
+    }
+    default:
+      break;
+  }
+}
+
+/** Fail-open: blind-transfers the call to the first configured fallback extension, same as a dependency outage caught before the call started. */
+function failOpen(sip: SipClient, call: IncomingCall, store: CallRecordStore, endMedia: () => void): void {
+  const fallback = config.ringGroup.fallbackExtensions[0];
+  if (fallback) {
+    sip.transferCall(call.callId, fallback);
+  } else {
+    console.warn(`[call ${call.callId}] no FALLBACK_EXTENSIONS configured — hanging up instead of transferring.`);
+    sip.hangupCall(call.callId);
+  }
+  endMedia();
+  store.update(call.callId, { outcome: "fallback", routedTo: fallback }).catch(() => {});
 }
 
 /** Encodes PCM16 (as produced by a TTS vendor) to mu-law and sends it as paced RTP frames. */

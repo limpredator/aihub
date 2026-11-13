@@ -180,6 +180,52 @@ export function buildResponse(opts: {
   return lines.join("\r\n");
 }
 
+/** Pulls the "sip:...@..." URI out of a From/To/Contact header value (angle brackets or bare). */
+export function extractUri(headerValue: string): string {
+  const bracketed = headerValue.match(/<([^>]+)>/);
+  if (bracketed) return bracketed[1];
+  return headerValue.split(";")[0].trim();
+}
+
+/** Pulls just the caller's number/user part out of a From header, for display/logging. */
+export function extractCallerId(fromHeader: string): string {
+  const uri = extractUri(fromHeader);
+  const match = uri.match(/sip:([^@]+)@/);
+  return match ? match[1] : uri;
+}
+
+export interface DialogRequestParams {
+  method: string;
+  requestUri: string;
+  from: string;
+  to: string;
+  callId: string;
+  cseq: number;
+  localAddress: string;
+  localPort: number;
+  branch: string;
+  extraHeaders?: string[];
+  body?: string;
+}
+
+/** Builds a request sent within an established dialog (BYE, REFER) — UAS side, so From carries our tag. */
+export function buildDialogRequest(p: DialogRequestParams): string {
+  const lines = [
+    `${p.method} ${p.requestUri} SIP/2.0`,
+    `Via: SIP/2.0/TLS ${p.localAddress}:${p.localPort};branch=${p.branch}`,
+    `Max-Forwards: 70`,
+    `From: ${p.from}`,
+    `To: ${p.to}`,
+    `Call-ID: ${p.callId}`,
+    `CSeq: ${p.cseq} ${p.method}`,
+    `Contact: <sip:${p.localAddress}:${p.localPort}>`,
+  ];
+  if (p.extraHeaders) lines.push(...p.extraHeaders);
+  const body = p.body ?? "";
+  lines.push(`Content-Length: ${Buffer.byteLength(body)}`, "", body);
+  return lines.join("\r\n");
+}
+
 /**
  * Buffers a TLS/TCP byte stream into complete SIP messages, using the
  * \r\n\r\n header terminator plus Content-Length to find each message's
