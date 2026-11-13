@@ -14,6 +14,7 @@ async function main() {
   const healthy = await isHealthy();
   if (healthy) {
     await sip.register();
+    console.log("[startup] registered with pbx.cerdik.co — ready for calls.");
   } else {
     console.warn("[startup] dependencies not healthy yet — staying unregistered until they are.");
   }
