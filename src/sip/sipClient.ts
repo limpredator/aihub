@@ -16,6 +16,7 @@ import {
   extractCallerId,
   SipStreamFramer,
   type ParsedRequest,
+  type ParsedResponse,
 } from "./sipMessage.js";
 
 // Registers over plain SIP/TLS (port 5061) — the same transport the native
@@ -64,6 +65,11 @@ export class SipClient extends EventEmitter {
   private state: SipRegistrationState = "unregistered";
   private framer = new SipStreamFramer();
   private dialogs = new Map<string, Dialog>();
+  // Set only while register() is awaiting a specific response (the initial
+  // challenge, or the authed retry). Any other inbound message — notably an
+  // OPTIONS keepalive ping the proxy can send mid-handshake — is routed
+  // through handleInboundMessage instead of being mistaken for it.
+  private pendingRegisterResponse: ((response: ParsedResponse) => void) | null = null;
 
   getState(): SipRegistrationState {
     return this.state;
@@ -88,6 +94,13 @@ export class SipClient extends EventEmitter {
         { host: config.sip.proxyHost, port: config.sip.proxyTlsPort },
         () => {
           if (!this.socket) return reject(new Error("socket not created"));
+          // Attached before the first REGISTER is sent: the proxy can and
+          // does interleave unrelated inbound requests (e.g. an OPTIONS
+          // keepalive ping) on this same socket during the handshake, and
+          // those must be answered/ignored rather than mistaken for the
+          // REGISTER response.
+          this.attachPersistentListener();
+
           const localAddress = this.socket.localAddress ?? "0.0.0.0";
           const localPort = this.socket.localPort ?? 0;
 
@@ -104,12 +117,10 @@ export class SipClient extends EventEmitter {
           });
           this.socket.write(firstRequest);
 
-          this.socket.once("data", (chunk) => {
-            const challengeResponse = parseResponse(chunk.toString());
+          this.pendingRegisterResponse = (challengeResponse) => {
             if (challengeResponse.status !== 401 && challengeResponse.status !== 407) {
               if (challengeResponse.status === 200) {
                 this.state = "registered";
-                this.attachPersistentListener();
                 resolve();
               } else {
                 this.state = "failed";
@@ -143,18 +154,16 @@ export class SipClient extends EventEmitter {
             });
             this.socket?.write(authedRequest);
 
-            this.socket?.once("data", (finalChunk) => {
-              const finalResponse = parseResponse(finalChunk.toString());
+            this.pendingRegisterResponse = (finalResponse) => {
               if (finalResponse.status === 200) {
                 this.state = "registered";
-                this.attachPersistentListener();
                 resolve();
               } else {
                 this.state = "failed";
                 reject(new Error(`REGISTER failed after auth: ${finalResponse.status} ${finalResponse.reason}`));
               }
-            });
-          });
+            };
+          };
         },
       );
 
@@ -165,7 +174,7 @@ export class SipClient extends EventEmitter {
     });
   }
 
-  /** After registration, keep listening for inbound requests (INVITE/ACK/BYE) using proper framing. */
+  /** Feeds inbound bytes through proper framing from connect time onward — used during the REGISTER handshake and afterward alike, so an interleaved inbound request never gets mistaken for a response we're waiting on. */
   private attachPersistentListener(): void {
     if (!this.socket) return;
     this.socket.removeAllListeners("data");
@@ -178,8 +187,14 @@ export class SipClient extends EventEmitter {
 
   private handleInboundMessage(raw: string): void {
     // Responses to requests we sent start with "SIP/2.0"; everything else
-    // is an incoming request from the proxy (INVITE, ACK, BYE, ...).
-    if (raw.startsWith("SIP/2.0")) return;
+    // is an incoming request from the proxy (INVITE, ACK, BYE, OPTIONS...).
+    if (raw.startsWith("SIP/2.0")) {
+      if (!this.pendingRegisterResponse) return;
+      const handler = this.pendingRegisterResponse;
+      this.pendingRegisterResponse = null;
+      handler(parseResponse(raw));
+      return;
+    }
 
     let request: ParsedRequest;
     try {
@@ -198,6 +213,11 @@ export class SipClient extends EventEmitter {
         break;
       case "BYE":
         this.handleBye(request);
+        break;
+      case "OPTIONS":
+        // Liveness/keepalive ping from the proxy — not part of any dialog,
+        // just answer it so the proxy keeps treating us as reachable.
+        this.socket?.write(buildResponse({ status: 200, reason: "OK", request }));
         break;
       default:
         break;
