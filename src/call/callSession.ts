@@ -59,6 +59,7 @@ async function handleInvite(sip: SipClient, call: IncomingCall, store: CallRecor
   await stt.connect(async (partial) => {
     if (!partial.isFinal || !partial.text.trim() || ended) return;
 
+    console.log(`[call ${call.callId}] caller said: "${partial.text}"`);
     messages.push({ role: "user", content: partial.text });
 
     let turn: Awaited<ReturnType<typeof runTurn>>;
@@ -71,6 +72,7 @@ async function handleInvite(sip: SipClient, call: IncomingCall, store: CallRecor
     }
 
     if (turn.reply) {
+      console.log(`[call ${call.callId}] replying: "${turn.reply}"`);
       messages.push({ role: "assistant", content: turn.reply });
       try {
         const audio = await tts.synthesize(turn.reply, "en");

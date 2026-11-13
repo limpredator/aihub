@@ -47,6 +47,18 @@ export class SpeechmaticsRealtimeClient {
         onTranscript({ text: data.metadata?.transcript ?? "", isFinal: false });
       } else if (data.message === "AddTranscript") {
         onTranscript({ text: data.metadata?.transcript ?? "", isFinal: true });
+      } else if (data.message === "Error") {
+        console.error("[stt] Speechmatics rejected the session:", data.type, data.reason);
+      }
+    });
+
+    this.socket.addEventListener("error", (event) => {
+      console.error("[stt] WebSocket error:", event);
+    });
+
+    this.socket.addEventListener("close", (event) => {
+      if (event.code !== 1000) {
+        console.warn(`[stt] WebSocket closed unexpectedly: code=${event.code} reason=${event.reason}`);
       }
     });
   }
