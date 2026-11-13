@@ -27,6 +27,7 @@ export const config = {
   tts: {
     provider: process.env.TTS_PROVIDER || "",
     apiKey: process.env.TTS_API_KEY || "",
+    region: process.env.TTS_REGION || "",
   },
   healthCheckIntervalMs: Number(process.env.HEALTH_CHECK_INTERVAL_MS || 15000),
 };

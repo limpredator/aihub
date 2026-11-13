@@ -5,16 +5,24 @@ import { encodeMulaw, decodeMulaw } from "../media/g711.js";
 import { SpeechmaticsRealtimeClient } from "../stt/speechmatics.js";
 import { runTurn, type ChatMessage } from "../llm/openrouter.js";
 import { buildSystemPrompt } from "../llm/prompt.js";
-import { UnconfiguredTtsClient } from "../tts/ttsClient.js";
+import { AzureTtsClient, UnconfiguredTtsClient, type TtsClient } from "../tts/ttsClient.js";
 import type { CallRecordStore } from "../callStore/callRecordStore.js";
 import { config } from "../config.js";
 
 // Wires one inbound call together: RTP media <-> STT -> LLM -> (TTS).
-// TTS is expected to throw (UnconfiguredTtsClient, vendor undecided) —
-// caught and logged rather than crashing the call, so everything up to
-// "what the receptionist would have said" is exercisable today.
+// Falls back to UnconfiguredTtsClient (throws by design) until
+// TTS_PROVIDER/TTS_API_KEY/TTS_REGION are filled in — caught and logged
+// rather than crashing the call, so everything up to "what the receptionist
+// would have said" is exercisable without a TTS vendor configured.
 
-const tts = new UnconfiguredTtsClient();
+function buildTtsClient(): TtsClient {
+  if (config.tts.provider === "azure" && config.tts.apiKey && config.tts.region) {
+    return new AzureTtsClient({ apiKey: config.tts.apiKey, region: config.tts.region });
+  }
+  return new UnconfiguredTtsClient();
+}
+
+const tts = buildTtsClient();
 
 export function attachCallHandling(sip: SipClient, store: CallRecordStore): void {
   sip.on("invite", (call) => {

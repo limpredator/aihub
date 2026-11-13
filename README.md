@@ -18,23 +18,31 @@ Full call path is wired end-to-end in code (INVITE → RTP media → STT → LLM
 still **unverified against the real PBX/proxy**. What's blocking a live
 call:
 
-1. **PBX provisioning** — needs a `SIP_EXTENSION`/`SIP_PASSWORD` and ring
-   group membership on the PBX side. Deferred by design (not urgent) until
-   the rest of this list is ready to test against.
+1. **PBX provisioning** — **done**. `SIP_EXTENSION=8888` is provisioned and
+   registers live against `pbx.cerdik.co`.
 2. **Realtime STT** (`src/stt/speechmatics.ts`) — targets Speechmatics'
-   realtime endpoint with `melia-1`, unverified. The transcriptor app only
-   exercises their batch job API; confirm the realtime endpoint actually
-   supports this model and config shape against real audio.
-3. **TTS vendor** (`src/tts/ttsClient.ts`) — interface only, no
-   implementation. `UnconfiguredTtsClient` throws by design; `CallSession`
-   catches that and logs what the receptionist *would* have said, so the
-   STT→LLM half is exercisable without blocking on this. See Cerdik PBX's
-   `docs/research-ai-receptionist.md` for the Bahasa Malaysia TTS coverage
-   gap this needs to resolve first.
+   realtime endpoint with `melia-1` + `operating_point: "enhanced"` (picked
+   for 8kHz telephony audio over the default "standard" point), still
+   unverified against real call audio. The transcriptor app only exercises
+   their batch job API; confirm the realtime endpoint actually supports
+   this model/config shape once `SPEECHMATICS_API_KEY` is filled in.
+3. **TTS vendor** — **decided: Azure Cognitive Services Speech (Neural
+   TTS)**, implemented in `src/tts/ttsClient.ts` as `AzureTtsClient`. Chosen
+   over ElevenLabs/AWS Polly for its native `ms-MY` neural voice, covering
+   the Bahasa Malaysia gap in `docs/research-ai-receptionist.md`. Renders
+   straight to `raw-8khz-16bit-mono-pcm` so no resampling step is needed
+   before mu-law encoding. Needs `TTS_API_KEY` + `TTS_REGION` filled in;
+   `UnconfiguredTtsClient` stays as the fallback until then (throws by
+   design — `CallSession` catches that and logs what the receptionist
+   *would* have said).
 4. **SIP stream framing is still simplified** (`src/sip/sipMessage.ts` —
    `SipStreamFramer`) — it buffers on `\r\n\r\n` + `Content-Length`, which
-   is spec-correct, but has not been exercised against a real proxy's exact
-   byte-chunking behavior.
+   is spec-correct, but has only been exercised against REGISTER/OPTIONS so
+   far. An inbound INVITE's SDP body crossing TCP packet boundaries hasn't
+   been tested against the real proxy yet.
+5. **`OPENROUTER_API_KEY`** / **`SPEECHMATICS_API_KEY`** / **`TTS_API_KEY`**
+   — all still blank in `.env`; nothing above can be exercised live until
+   these are filled in.
 
 What's implemented:
 

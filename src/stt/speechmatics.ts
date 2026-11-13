@@ -27,6 +27,11 @@ export class SpeechmaticsRealtimeClient {
           audio_format: { type: "raw", encoding: "pcm_s16le", sample_rate: 8000 },
           transcription_config: {
             model: "melia-1",
+            // "enhanced" over the default "standard" operating point — this
+            // audio is 8kHz mu-law off the PBX, not studio-quality mic
+            // input, and enhanced handles that degradation meaningfully
+            // better. Still unverified end-to-end against real call audio.
+            operating_point: "enhanced",
             language: "multi",
             language_hints: ["ms", "en", "cmn"],
             max_delay: 1,
