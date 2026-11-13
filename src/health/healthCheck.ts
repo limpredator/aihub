@@ -25,7 +25,6 @@ function checkSpeechmaticsConfigured(): boolean {
 }
 
 function checkTtsConfigured(): boolean {
-  if (config.tts.provider === "azure") return Boolean(config.tts.apiKey && config.tts.region);
   return Boolean(config.tts.provider && config.tts.apiKey);
 }
 

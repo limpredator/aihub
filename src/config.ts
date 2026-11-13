@@ -27,7 +27,10 @@ export const config = {
   tts: {
     provider: process.env.TTS_PROVIDER || "",
     apiKey: process.env.TTS_API_KEY || "",
-    region: process.env.TTS_REGION || "",
+    // ElevenLabs voice ID (any premade or cloned voice works across
+    // languages with eleven_multilingual_v2). Defaults to "Rachel", one of
+    // ElevenLabs' standard premade voices.
+    voiceId: process.env.TTS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM",
   },
   healthCheckIntervalMs: Number(process.env.HEALTH_CHECK_INTERVAL_MS || 15000),
 };

@@ -5,7 +5,7 @@ import { encodeMulaw, decodeMulaw } from "../media/g711.js";
 import { SpeechmaticsRealtimeClient } from "../stt/speechmatics.js";
 import { runTurn, type ChatMessage } from "../llm/openrouter.js";
 import { buildSystemPrompt } from "../llm/prompt.js";
-import { AzureTtsClient, UnconfiguredTtsClient, type TtsClient } from "../tts/ttsClient.js";
+import { ElevenLabsTtsClient, UnconfiguredTtsClient, type TtsClient } from "../tts/ttsClient.js";
 import type { CallRecordStore } from "../callStore/callRecordStore.js";
 import { config } from "../config.js";
 
@@ -16,8 +16,8 @@ import { config } from "../config.js";
 // would have said" is exercisable without a TTS vendor configured.
 
 function buildTtsClient(): TtsClient {
-  if (config.tts.provider === "azure" && config.tts.apiKey && config.tts.region) {
-    return new AzureTtsClient({ apiKey: config.tts.apiKey, region: config.tts.region });
+  if (config.tts.provider === "elevenlabs" && config.tts.apiKey) {
+    return new ElevenLabsTtsClient({ apiKey: config.tts.apiKey, voiceId: config.tts.voiceId });
   }
   return new UnconfiguredTtsClient();
 }

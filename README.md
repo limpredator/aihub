@@ -26,21 +26,24 @@ call:
    unverified against real call audio. The transcriptor app only exercises
    their batch job API; confirm the realtime endpoint actually supports
    this model/config shape once `SPEECHMATICS_API_KEY` is filled in.
-3. **TTS vendor** — **decided: Azure Cognitive Services Speech (Neural
-   TTS)**, implemented in `src/tts/ttsClient.ts` as `AzureTtsClient`. Chosen
-   over ElevenLabs/AWS Polly for its native `ms-MY` neural voice, covering
-   the Bahasa Malaysia gap in `docs/research-ai-receptionist.md`. Renders
-   straight to `raw-8khz-16bit-mono-pcm` so no resampling step is needed
-   before mu-law encoding. Needs `TTS_API_KEY` + `TTS_REGION` filled in;
-   `UnconfiguredTtsClient` stays as the fallback until then (throws by
-   design — `CallSession` catches that and logs what the receptionist
-   *would* have said).
+3. **TTS vendor** — **decided: ElevenLabs**, implemented in
+   `src/tts/ttsClient.ts` as `ElevenLabsTtsClient`. Switched from an earlier
+   Azure pick after Azure's signup got stuck behind a tenant-restricted
+   account error. `eleven_multilingual_v2` officially supports Malay,
+   covering the Bahasa Malaysia gap in `docs/research-ai-receptionist.md`,
+   and signup is just an API key (no cloud-project/tenant setup). Requested
+   as `pcm_8000` (PCM16LE @ 8kHz) so it fits the existing mu-law pipeline
+   unchanged. Needs `TTS_API_KEY` filled in (`TTS_VOICE_ID` optional —
+   defaults to ElevenLabs' "Rachel" premade voice); `UnconfiguredTtsClient`
+   stays as the fallback until then (throws by design — `CallSession`
+   catches that and logs what the receptionist *would* have said).
 4. **SIP stream framing is still simplified** (`src/sip/sipMessage.ts` —
    `SipStreamFramer`) — it buffers on `\r\n\r\n` + `Content-Length`, which
    is spec-correct, but has only been exercised against REGISTER/OPTIONS so
    far. An inbound INVITE's SDP body crossing TCP packet boundaries hasn't
    been tested against the real proxy yet.
 5. **`OPENROUTER_API_KEY`** / **`SPEECHMATICS_API_KEY`** / **`TTS_API_KEY`**
+   (ElevenLabs)
    — all still blank in `.env`; nothing above can be exercised live until
    these are filled in.
 

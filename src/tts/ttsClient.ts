@@ -1,10 +1,16 @@
-// Azure Cognitive Services Speech (Neural TTS) — chosen over ElevenLabs/AWS
-// Polly for the one thing they don't have: a native ms-MY neural voice, to
-// cover the Bahasa Malaysia gap flagged in docs/research-ai-receptionist.md.
-// Also asks it to render straight to raw-8khz-16bit-mono-pcm, matching what
-// callSession.ts needs for mu-law encoding — no resampling step required.
+// TTS vendor: ElevenLabs. Switched from an earlier Azure attempt after the
+// Azure sign-up got stuck behind a tenant-restricted account error — not
+// worth fighting. ElevenLabs' eleven_multilingual_v2 model officially lists
+// Malay as a supported language, covering the Bahasa Malaysia gap flagged
+// in docs/research-ai-receptionist.md, and signup is just an API key (no
+// cloud-project/tenant setup). Requested in pcm_8000 (raw PCM16LE @ 8kHz)
+// to match the existing mu-law pipeline's input — ElevenLabs can also
+// return ulaw_8000 directly, but pcm_8000 keeps this client's output
+// consistent with the TtsClient contract below, so callSession.ts's
+// encode step doesn't need a vendor-specific branch.
 
 export interface TtsClient {
+  /** Returns PCM16LE audio sampled at 8kHz, ready for g711 mu-law encoding. */
   synthesize(text: string, language: "en" | "ms" | "cmn"): Promise<Buffer>;
 }
 
@@ -14,55 +20,31 @@ export class UnconfiguredTtsClient implements TtsClient {
   }
 }
 
-// One neural voice per language this receptionist needs to speak. "cmn"
-// (Mandarin) is mapped to a Malaysia-market voice where Azure has one, to
-// keep the accent consistent with local callers rather than defaulting to a
-// mainland China voice.
-const VOICE_BY_LANGUAGE: Record<"en" | "ms" | "cmn", { locale: string; voice: string }> = {
-  en: { locale: "en-MY", voice: "en-MY-YasminNeural" },
-  ms: { locale: "ms-MY", voice: "ms-MY-YasminNeural" },
-  cmn: { locale: "zh-CN", voice: "zh-CN-XiaoxiaoNeural" },
-};
-
-function escapeSsml(text: string): string {
-  return text
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&apos;");
-}
-
-export interface AzureTtsOptions {
+export interface ElevenLabsTtsOptions {
   apiKey: string;
-  /** Azure region the Speech resource was created in, e.g. "southeastasia". */
-  region: string;
+  /** Voice to speak with — any ElevenLabs voice ID works across languages with eleven_multilingual_v2. */
+  voiceId: string;
 }
 
-export class AzureTtsClient implements TtsClient {
-  constructor(private readonly opts: AzureTtsOptions) {}
+export class ElevenLabsTtsClient implements TtsClient {
+  constructor(private readonly opts: ElevenLabsTtsOptions) {}
 
-  async synthesize(text: string, language: "en" | "ms" | "cmn"): Promise<Buffer> {
-    const { locale, voice } = VOICE_BY_LANGUAGE[language];
-    const ssml =
-      `<speak version="1.0" xml:lang="${locale}">` +
-      `<voice name="${voice}">${escapeSsml(text)}</voice>` +
-      `</speak>`;
+  async synthesize(text: string, _language: "en" | "ms" | "cmn"): Promise<Buffer> {
+    const url = `https://api.elevenlabs.io/v1/text-to-speech/${this.opts.voiceId}?output_format=pcm_8000`;
 
-    const res = await fetch(`https://${this.opts.region}.tts.speech.microsoft.com/cognitiveservices/v1`, {
+    const res = await fetch(url, {
       method: "POST",
       headers: {
-        "Ocp-Apim-Subscription-Key": this.opts.apiKey,
-        "Content-Type": "application/ssml+xml",
-        // Raw PCM straight out, at the same 8kHz callSession.ts/g711.ts
-        // already assume for RTP — no resampling needed before mu-law.
-        "X-Microsoft-OutputFormat": "raw-8khz-16bit-mono-pcm",
+        "xi-api-key": this.opts.apiKey,
+        "Content-Type": "application/json",
       },
-      body: ssml,
+      // No language_code: eleven_multilingual_v2 doesn't support that
+      // parameter — language is inferred from the text itself.
+      body: JSON.stringify({ text, model_id: "eleven_multilingual_v2" }),
     });
 
     if (!res.ok) {
-      throw new Error(`Azure TTS request failed: ${res.status} ${res.statusText}`);
+      throw new Error(`ElevenLabs TTS request failed: ${res.status} ${res.statusText}`);
     }
 
     return Buffer.from(await res.arrayBuffer());
