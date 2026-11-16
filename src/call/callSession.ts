@@ -58,6 +58,14 @@ async function handleInvite(sip: SipClient, call: IncomingCall, store: CallRecor
     if (debounceTimer) clearTimeout(debounceTimer);
     rtp.close();
     stt.close();
+    // Written here, once, regardless of how the call ended (hangup, routed,
+    // message taken, fail-open) — previously the only record of what a
+    // caller actually asked for was console output that scrolled away.
+    const transcript = messages
+      .filter((m) => m.role !== "system")
+      .map((m) => `${m.role === "user" ? "caller" : "ai"}: ${m.content}`)
+      .join("\n");
+    store.update(call.callId, { transcript }).catch(() => {});
   };
 
   const speakReply = async (text: string) => {
@@ -184,7 +192,7 @@ function handleToolCall(
       break;
     }
     case "take_message": {
-      store.update(call.callId, { outcome: "message_taken", transcript: String(args.message ?? "") }).catch(() => {});
+      store.update(call.callId, { outcome: "message_taken", message: String(args.message ?? "") }).catch(() => {});
       sip.hangupCall(call.callId);
       endMedia();
       break;
