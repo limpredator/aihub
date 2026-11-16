@@ -58,6 +58,17 @@ async function handleInvite(sip: SipClient, call: IncomingCall, store: CallRecor
     stt.close();
   };
 
+  const speakReply = async (text: string) => {
+    console.log(`[call ${call.callId}] replying: "${text}"`);
+    messages.push({ role: "assistant", content: text });
+    try {
+      const audio = await tts.synthesize(text, "en");
+      speakMulaw(rtp, audio);
+    } catch (err) {
+      console.warn(`[call ${call.callId}] TTS unavailable, would have said: "${text}" (${(err as Error).message})`);
+    }
+  };
+
   const stt = new SpeechmaticsRealtimeClient();
   await stt.connect(async (partial) => {
     if (!partial.isFinal || !partial.text.trim() || ended) return;
@@ -74,22 +85,19 @@ async function handleInvite(sip: SipClient, call: IncomingCall, store: CallRecor
       return;
     }
 
-    if (turn.reply) {
-      console.log(`[call ${call.callId}] replying: "${turn.reply}"`);
-      messages.push({ role: "assistant", content: turn.reply });
-      try {
-        const audio = await tts.synthesize(turn.reply, "en");
-        speakMulaw(rtp, audio);
-      } catch (err) {
-        console.warn(`[call ${call.callId}] TTS unavailable, would have said: "${turn.reply}" (${(err as Error).message})`);
-      }
-    }
+    if (turn.reply) await speakReply(turn.reply);
 
     for (const toolCall of turn.toolCalls) {
       console.log(`[call ${call.callId}] tool call: ${toolCall.function.name}(${toolCall.function.arguments})`);
       handleToolCall(sip, call, store, endMedia, toolCall);
     }
   });
+
+  // Speak first so the caller (and whoever's testing) has immediate proof
+  // the call connected, instead of silence until they happen to say
+  // something — asked for explicitly after a live test where it wasn't
+  // obvious the call had gone through (2026-11-16).
+  await speakReply("Hello, thank you for calling Cerdik Tech. How can I help you today?");
 
   rtp.on("audio", (mulawPayload: Buffer) => {
     if (ended) return;

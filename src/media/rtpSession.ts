@@ -28,6 +28,7 @@ export class RtpSession extends EventEmitter {
   private readonly readyPromise: Promise<number>;
   private packetsReceived = 0;
   private watchdog: NodeJS.Timeout | null = null;
+  private closed = false;
 
   constructor(opts: RtpSessionOptions) {
     super();
@@ -76,6 +77,13 @@ export class RtpSession extends EventEmitter {
 
   /** Sends one or more 20ms mu-law frames (160 bytes each) as RTP packets. */
   sendMulawFrame(mulawPayload: Buffer): void {
+    // speakMulaw() paces frames with setTimeout, so a hangup mid-reply
+    // (BYE arrives, close() runs) doesn't cancel the frames already
+    // queued — the next one fires on a dead socket and dgram throws
+    // synchronously (ERR_SOCKET_DGRAM_NOT_RUNNING), crashing the whole
+    // process. Seen live (2026-11-16) on a call that ended while the
+    // receptionist was still talking.
+    if (this.closed) return;
     const header = Buffer.alloc(12);
     header[0] = (RTP_VERSION << 6) | 0; // version=2, padding/extension/CC=0
     header[1] = PCMU_PAYLOAD_TYPE; // marker=0
@@ -91,6 +99,7 @@ export class RtpSession extends EventEmitter {
   }
 
   close(): void {
+    this.closed = true;
     if (this.watchdog) clearTimeout(this.watchdog);
     this.socket.close();
   }
