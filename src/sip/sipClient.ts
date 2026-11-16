@@ -77,7 +77,13 @@ export class SipClient extends EventEmitter {
 
   /** The local address of the registered TLS socket — used as the SDP answer's connection address. */
   getLocalAddress(): string {
-    return this.socket?.localAddress ?? "0.0.0.0";
+    const address = this.socket?.localAddress ?? "0.0.0.0";
+    // Node can report a dual-stack socket's address as an IPv4-mapped IPv6
+    // string (::ffff:192.168.x.x) depending on how the OS resolved the
+    // connection — found live when this produced a malformed "c=IN IP4
+    // ::ffff:..." SDP line that the PBX couldn't route RTP to (2026-11-16).
+    const mapped = address.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
+    return mapped ? mapped[1] : address;
   }
 
   async register(): Promise<void> {
@@ -101,7 +107,7 @@ export class SipClient extends EventEmitter {
           // REGISTER response.
           this.attachPersistentListener();
 
-          const localAddress = this.socket.localAddress ?? "0.0.0.0";
+          const localAddress = this.getLocalAddress();
           const localPort = this.socket.localPort ?? 0;
 
           const firstRequest = buildRegister({
@@ -243,7 +249,7 @@ export class SipClient extends EventEmitter {
           reason: "OK",
           request,
           localTag,
-          contact: `sip:${config.sip.extension}@${this.socket?.localAddress ?? "0.0.0.0"}:${this.socket?.localPort ?? 0}`,
+          contact: `sip:${config.sip.extension}@${this.getLocalAddress()}:${this.socket?.localPort ?? 0}`,
           body: localSdp,
         });
         this.socket?.write(response);
@@ -285,7 +291,7 @@ export class SipClient extends EventEmitter {
       to: request.headers["from"] ?? "",
       callId,
       cseq: dialog.cseq,
-      localAddress: this.socket.localAddress ?? "0.0.0.0",
+      localAddress: this.getLocalAddress(),
       localPort: this.socket.localPort ?? 0,
       branch: generateBranch(),
       extraHeaders,
