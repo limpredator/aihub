@@ -68,6 +68,11 @@ async function handleInvite(sip: SipClient, call: IncomingCall, store: CallRecor
     store.update(call.callId, { transcript }).catch(() => {});
   };
 
+  // Set while a reply's audio is being sent out, so a burst of new caller
+  // speech can cut it short (barge-in) instead of talking over them; cleared
+  // once that reply finishes or is cancelled.
+  let cancelCurrentSpeech: (() => void) | null = null;
+
   const speakReply = async (text: string) => {
     console.log(`[call ${call.callId}] replying: "${text}"`);
     messages.push({ role: "assistant", content: text });
@@ -78,7 +83,10 @@ async function handleInvite(sip: SipClient, call: IncomingCall, store: CallRecor
       // each trigger a turn — can otherwise start a second reply's frames
       // before the first reply's are done going out, interleaving both
       // replies' audio on the wire ("cross pathing", heard live 2026-11-16).
-      await speakMulaw(rtp, audio);
+      const speech = speakMulaw(rtp, audio);
+      cancelCurrentSpeech = speech.cancel;
+      await speech.done;
+      cancelCurrentSpeech = null;
     } catch (err) {
       console.warn(`[call ${call.callId}] TTS unavailable, would have said: "${text}" (${(err as Error).message})`);
     }
@@ -133,16 +141,36 @@ async function handleInvite(sip: SipClient, call: IncomingCall, store: CallRecor
 
   const stt = new SpeechmaticsRealtimeClient();
   await stt.connect((partial) => {
-    if (!partial.isFinal || !partial.text.trim() || ended) return;
+    if (ended || !partial.text.trim()) return;
 
-    pendingUtterance.push(partial.text.trim());
+    // Barge-in: the caller started talking again while a reply was still
+    // playing out — stop it immediately rather than talking over them, then
+    // fall through to handle their new speech normally.
+    if (cancelCurrentSpeech) {
+      cancelCurrentSpeech();
+      cancelCurrentSpeech = null;
+    }
+
+    // Reset the debounce timer on every transcript event, not just finals.
+    // A final can arrive noticeably after the caller actually said it (STT
+    // finalization lag over the websocket), so resetting only on finals lets
+    // that lag masquerade as a real pause and split one thought into separate
+    // turns (seen live 2026-11-16: "have." and a lone "." each treated as
+    // their own turn even with the finals-only debounce below). Partials prove
+    // the caller is still mid-utterance, so they push the quiet-period back
+    // too — only finals get buffered as actual text.
     if (debounceTimer) clearTimeout(debounceTimer);
-    // 900ms was still too short — a live caller's mid-sentence pause ("Can I"
-    // ... pause ... "know what brand of PBX you are offering?") exceeded it
-    // and got split into two turns anyway (2026-11-16). 1800ms costs a bit
-    // more latency before the AI responds but matches normal conversational
-    // thinking-pauses better.
+    // 900ms, then 1800ms, were both still too short when only finals reset
+    // the timer — a live caller's mid-sentence pause ("Can I" ... pause ...
+    // "know what brand of PBX you are offering?") exceeded it and got split
+    // into two turns anyway (2026-11-16). 1800ms costs a bit more latency
+    // before the AI responds but matches normal conversational thinking-pauses
+    // better, and now resetting on partials too should absorb finalization lag.
     debounceTimer = setTimeout(scheduleTurn, 1800);
+
+    if (partial.isFinal) {
+      pendingUtterance.push(partial.text.trim());
+    }
   });
 
   // Speak first so the caller (and whoever's testing) has immediate proof
@@ -220,13 +248,22 @@ function failOpen(sip: SipClient, call: IncomingCall, store: CallRecordStore, en
   store.update(call.callId, { outcome: "fallback", routedTo: fallback }).catch(() => {});
 }
 
-/** Encodes PCM16 (as produced by a TTS vendor) to mu-law and sends it as paced RTP frames. Resolves once the last frame has been sent. */
-function speakMulaw(rtp: RtpSession, pcm16le: Buffer): Promise<void> {
+/** A speakMulaw() in progress — cancel() stops it mid-reply for barge-in. */
+interface SpeechHandle {
+  done: Promise<void>;
+  cancel: () => void;
+}
+
+/** Encodes PCM16 (as produced by a TTS vendor) to mu-law and sends it as paced RTP frames. `done` resolves once the last frame is sent, or immediately once cancel() is called. */
+function speakMulaw(rtp: RtpSession, pcm16le: Buffer): SpeechHandle {
   const FRAME_BYTES = 160; // 160 samples = 20ms @ 8kHz, one byte per mu-law sample
   const pcm16 = new Int16Array(pcm16le.buffer, pcm16le.byteOffset, pcm16le.byteLength / 2);
   const mulaw = encodeMulaw(pcm16);
 
-  return new Promise((resolve) => {
+  let cancelled = false;
+  let timer: NodeJS.Timeout | null = null;
+
+  const done = new Promise<void>((resolve) => {
     // Schedule each frame against an absolute start time rather than chaining
     // setTimeout(fn, 20) off of itself — the chained version drifts by
     // whatever each tick's actual overhead is (event loop load, STT/LLM work
@@ -237,6 +274,10 @@ function speakMulaw(rtp: RtpSession, pcm16le: Buffer): Promise<void> {
     const start = Date.now();
     let frameIndex = 0;
     const sendNext = () => {
+      if (cancelled) {
+        resolve();
+        return;
+      }
       const offset = frameIndex * FRAME_BYTES;
       if (offset >= mulaw.length) {
         resolve();
@@ -246,8 +287,15 @@ function speakMulaw(rtp: RtpSession, pcm16le: Buffer): Promise<void> {
       rtp.sendMulawFrame(Buffer.from(frame));
       frameIndex++;
       const target = start + frameIndex * 20;
-      setTimeout(sendNext, Math.max(0, target - Date.now()));
+      timer = setTimeout(sendNext, Math.max(0, target - Date.now()));
     };
     sendNext();
   });
+
+  const cancel = () => {
+    cancelled = true;
+    if (timer) clearTimeout(timer);
+  };
+
+  return { done, cancel };
 }
