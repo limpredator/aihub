@@ -50,6 +50,13 @@
     border-bottom: 1px solid var(--border);
   }
   header .brand { display: flex; align-items: center; gap: 10px; }
+  #home-btn {
+    display: flex; align-items: center; justify-content: center;
+    width: 34px; height: 34px; border-radius: 9px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text-dim); cursor: pointer; flex-shrink: 0;
+  }
+  #home-btn:hover { background: var(--accent-weak); color: var(--accent); border-color: var(--accent); }
+  #home-btn svg { width: 17px; height: 17px; }
   header .brand .dot {
     width: 9px; height: 9px; border-radius: 50%;
     background: #22c55e; box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.18);
@@ -115,7 +122,15 @@
     .pill.live { background: #14532d55; color: #86efac; }
   }
 
-  #detail { flex: 1; overflow-y: auto; padding: 28px 32px; max-width: 880px; }
+  #detail { flex: 1; overflow-y: auto; padding: 28px 32px; }
+  #detail .inner { max-width: 1100px; }
+
+  .home-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; margin-bottom: 24px; }
+  .home-stats .card { margin-bottom: 0; text-align: center; padding: 18px; }
+  .home-stats .card .n { font-size: 26px; font-weight: 700; }
+  .home-stats .card .lbl { font-size: 12px; color: var(--text-faint); text-transform: uppercase; letter-spacing: .04em; margin-top: 4px; }
+  .home-recent .row { border: 1px solid var(--border); border-radius: var(--radius); margin-bottom: 8px; background: var(--panel); }
+  .home-recent .row:hover { border-color: var(--accent); }
   .empty { color: var(--text-faint); padding: 40px 24px; text-align: center; font-size: 13.5px; }
 
   .detail-head { display: flex; align-items: center; gap: 14px; margin-bottom: 22px; }
@@ -144,6 +159,9 @@
 <body>
 <header>
   <div class="brand">
+    <button id="home-btn" title="Home">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11.5 12 4l9 7.5"/><path d="M5 10v9a1 1 0 0 0 1 1h4v-6h4v6h4a1 1 0 0 0 1-1v-9"/></svg>
+    </button>
     <span class="dot"></span>
     <div>
       <h1>Cerdik AI Receptionist</h1>
@@ -245,11 +263,65 @@ function render() {
   });
 }
 
+function outcomeCounts() {
+  const counts = { routed: 0, message_taken: 0, fallback: 0, hangup: 0, live: 0 };
+  calls.forEach((c) => { counts[c.outcome || "live"] = (counts[c.outcome || "live"] || 0) + 1; });
+  return counts;
+}
+
+function renderHome() {
+  const detailEl = document.getElementById("detail");
+  const counts = outcomeCounts();
+  const recent = calls.slice(0, 8);
+
+  detailEl.innerHTML = `
+    <div class="inner">
+      <div class="detail-head"><div><h2>Overview</h2><div class="meta-line">Last ${recent.length} calls shown below</div></div></div>
+
+      <div class="home-stats">
+        <div class="card"><div class="n">${calls.length}</div><div class="lbl">Total calls</div></div>
+        <div class="card"><div class="n">${counts.message_taken}</div><div class="lbl">Messages taken</div></div>
+        <div class="card"><div class="n">${counts.routed}</div><div class="lbl">Routed</div></div>
+        <div class="card"><div class="n">${counts.fallback}</div><div class="lbl">Fallback</div></div>
+        <div class="card"><div class="n">${counts.hangup}</div><div class="lbl">Hangup</div></div>
+        <div class="card"><div class="n">${counts.live}</div><div class="lbl">In progress</div></div>
+      </div>
+
+      <div class="card" style="padding: 8px; background: transparent; border: none; box-shadow: none;">
+        <label style="padding-left: 8px;">Recent calls</label>
+        <div class="home-recent">
+          ${recent.length === 0 ? '<div class="empty">No calls yet.</div>' : recent.map((c) => `
+            <div class="row" data-id="${c.callId}">
+              <div class="avatar">${initials(c.caller)}</div>
+              <div class="row-body">
+                <div class="row-top">
+                  <span class="caller">${escapeHtml(c.caller) || "Unknown caller"}</span>
+                  <span class="time">${fmtRelative(c.startedAt)}</span>
+                </div>
+                <div class="preview">${escapeHtml(c.summary || c.message || "No summary yet")}</div>
+                <span class="pill ${badgeClass(c.outcome)}">${outcomeLabel(c.outcome)}</span>
+              </div>
+            </div>
+          `).join("")}
+        </div>
+      </div>
+    </div>
+  `;
+
+  detailEl.querySelectorAll(".home-recent .row").forEach((el) => {
+    el.addEventListener("click", () => {
+      selectedId = el.dataset.id;
+      render();
+      renderDetail();
+    });
+  });
+}
+
 function renderDetail() {
   const detailEl = document.getElementById("detail");
   const call = calls.find((c) => c.callId === selectedId);
   if (!call) {
-    detailEl.innerHTML = '<div class="empty">Select a call on the left.</div>';
+    renderHome();
     return;
   }
 
@@ -262,35 +334,43 @@ function renderDetail() {
     : '<p style="color: var(--text-faint)">No transcript yet.</p>';
 
   detailEl.innerHTML = `
-    <div class="detail-head">
-      <div class="avatar">${initials(call.caller)}</div>
-      <div>
-        <h2>${escapeHtml(call.caller) || "Unknown caller"}</h2>
-        <div class="meta-line">${fmtTime(call.startedAt)}${call.endedAt ? " → " + fmtTime(call.endedAt) : ""}</div>
+    <div class="inner">
+      <div class="detail-head">
+        <div class="avatar">${initials(call.caller)}</div>
+        <div>
+          <h2>${escapeHtml(call.caller) || "Unknown caller"}</h2>
+          <div class="meta-line">${fmtTime(call.startedAt)}${call.endedAt ? " → " + fmtTime(call.endedAt) : ""}</div>
+        </div>
       </div>
-    </div>
 
-    ${call.summary
-      ? `<div class="card summary"><label>Summary / what to do</label><p>${escapeHtml(call.summary)}</p></div>`
-      : call.transcript ? `<div class="card summary"><label>Summary / what to do</label><p>Generating…</p></div>` : ""}
+      ${call.summary
+        ? `<div class="card summary"><label>Summary / what to do</label><p>${escapeHtml(call.summary)}</p></div>`
+        : call.transcript ? `<div class="card summary"><label>Summary / what to do</label><p>Generating…</p></div>` : ""}
 
-    <div class="card">
-      <div class="grid-fields">
-        <div class="field"><label>Outcome</label><div class="val"><span class="pill ${badgeClass(call.outcome)}">${outcomeLabel(call.outcome)}</span></div></div>
-        ${call.routedTo ? `<div class="field"><label>Routed to</label><div class="val">${escapeHtml(call.routedTo)}</div></div>` : ""}
-        <div class="field"><label>Started</label><div class="val">${fmtTime(call.startedAt)}</div></div>
-        <div class="field"><label>Ended</label><div class="val">${fmtTime(call.endedAt)}</div></div>
+      <div class="card">
+        <div class="grid-fields">
+          <div class="field"><label>Outcome</label><div class="val"><span class="pill ${badgeClass(call.outcome)}">${outcomeLabel(call.outcome)}</span></div></div>
+          ${call.routedTo ? `<div class="field"><label>Routed to</label><div class="val">${escapeHtml(call.routedTo)}</div></div>` : ""}
+          <div class="field"><label>Started</label><div class="val">${fmtTime(call.startedAt)}</div></div>
+          <div class="field"><label>Ended</label><div class="val">${fmtTime(call.endedAt)}</div></div>
+        </div>
       </div>
-    </div>
 
-    ${call.message ? `<div class="card"><label>Message taken</label><p>${escapeHtml(call.message)}</p></div>` : ""}
+      ${call.message ? `<div class="card"><label>Message taken</label><p>${escapeHtml(call.message)}</p></div>` : ""}
 
-    <div class="card">
-      <label>Transcript</label>
-      <div class="transcript">${transcriptHtml}</div>
+      <div class="card">
+        <label>Transcript</label>
+        <div class="transcript">${transcriptHtml}</div>
+      </div>
     </div>
   `;
 }
+
+document.getElementById("home-btn").addEventListener("click", () => {
+  selectedId = null;
+  render();
+  renderHome();
+});
 
 document.getElementById("search").addEventListener("input", (e) => {
   query = e.target.value.trim().toLowerCase();
