@@ -14,6 +14,7 @@ const CALLS_DIR = join(process.cwd(), "data", "calls");
 const PORT = Number(process.env.DASHBOARD_PORT || 3900);
 const store = new FileCallRecordStore(CALLS_DIR);
 const EDITABLE_OUTCOMES = ["routed", "message_taken", "fallback", "hangup"];
+const EDITABLE_FOLLOWUP_STATUSES = ["pending", "contacted", "done"];
 
 async function listCalls(): Promise<CallRecord[]> {
   let files: string[];
@@ -63,7 +64,7 @@ const server = createServer(async (req, res) => {
     let body = "";
     for await (const chunk of req) body += chunk;
 
-    let patch: { outcome?: string };
+    let patch: { outcome?: string; followUpStatus?: string };
     try {
       patch = JSON.parse(body);
     } catch {
@@ -72,13 +73,26 @@ const server = createServer(async (req, res) => {
       return;
     }
 
-    if (patch.outcome === undefined || !EDITABLE_OUTCOMES.includes(patch.outcome)) {
+    if (patch.outcome === undefined && patch.followUpStatus === undefined) {
+      res.writeHead(400);
+      res.end("Provide outcome and/or followUpStatus");
+      return;
+    }
+    if (patch.outcome !== undefined && !EDITABLE_OUTCOMES.includes(patch.outcome)) {
       res.writeHead(400);
       res.end(`outcome must be one of: ${EDITABLE_OUTCOMES.join(", ")}`);
       return;
     }
+    if (patch.followUpStatus !== undefined && !EDITABLE_FOLLOWUP_STATUSES.includes(patch.followUpStatus)) {
+      res.writeHead(400);
+      res.end(`followUpStatus must be one of: ${EDITABLE_FOLLOWUP_STATUSES.join(", ")}`);
+      return;
+    }
 
-    await store.update(callId, { outcome: patch.outcome as CallRecord["outcome"] });
+    await store.update(callId, {
+      ...(patch.outcome !== undefined ? { outcome: patch.outcome as CallRecord["outcome"] } : {}),
+      ...(patch.followUpStatus !== undefined ? { followUpStatus: patch.followUpStatus as CallRecord["followUpStatus"] } : {}),
+    });
     res.writeHead(204);
     res.end();
     return;

@@ -109,24 +109,63 @@
     border-radius: 100px; letter-spacing: .02em; text-transform: uppercase;
     margin-top: 4px;
   }
-  .pill.routed, .pill-select.routed { background: #dbeafe; color: #1d4ed8; }
-  .pill.message_taken, .pill-select.message_taken { background: #fef3c7; color: #b45309; }
-  .pill.fallback, .pill-select.fallback { background: #fee2e2; color: #b91c1c; }
-  .pill.hangup, .pill-select.hangup { background: #e5e7eb; color: #4b5563; }
-  .pill.live, .pill-select.live { background: #dcfce7; color: #15803d; }
-  .pill-select {
-    font: inherit; font-size: 12px; font-weight: 600; text-transform: capitalize;
-    border: none; border-radius: 999px; padding: 4px 10px 4px 10px; cursor: pointer;
-    appearance: none; -webkit-appearance: none;
-  }
+  .pill.routed { background: #dbeafe; color: #1d4ed8; }
+  .pill.message_taken { background: #fef3c7; color: #b45309; }
+  .pill.fallback { background: #fee2e2; color: #b91c1c; }
+  .pill.hangup { background: #e5e7eb; color: #4b5563; }
+  .pill.live { background: #dcfce7; color: #15803d; }
   @media (prefers-color-scheme: dark) {
-    .pill.routed, .pill-select.routed { background: #1e3a8a55; color: #93c5fd; }
-    .pill.message_taken, .pill-select.message_taken { background: #78350f55; color: #fcd34d; }
-    .pill.fallback, .pill-select.fallback { background: #7f1d1d55; color: #fca5a5; }
-    .pill.hangup, .pill-select.hangup { background: #37415155; color: #d1d5db; }
-    .pill.live, .pill-select.live { background: #14532d55; color: #86efac; }
-    .pill-select option { background: var(--panel); color: var(--text); }
+    .pill.routed { background: #1e3a8a55; color: #93c5fd; }
+    .pill.message_taken { background: #78350f55; color: #fcd34d; }
+    .pill.fallback { background: #7f1d1d55; color: #fca5a5; }
+    .pill.hangup { background: #37415155; color: #d1d5db; }
+    .pill.live { background: #14532d55; color: #86efac; }
   }
+
+  /* Custom pill-styled dropdown (outcome / follow-up): a native <select>'s
+     open menu can't be themed, which looked like a plain OS popup — this
+     renders its own menu instead so it matches the rest of the dark UI. */
+  .dd { position: relative; display: inline-block; }
+  .dd-btn {
+    font: inherit; font-size: 12px; font-weight: 600; text-transform: capitalize;
+    border: 1px solid transparent; border-radius: 999px; padding: 4px 10px;
+    cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+    background: var(--border); color: var(--text-dim);
+  }
+  .dd-btn:hover { border-color: var(--accent); }
+  .dd-btn:disabled { opacity: .6; cursor: default; }
+  .dd-btn .dd-caret { opacity: .6; margin-left: 2px; }
+  .dd-dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .dd-dot.routed, .dd-dot.contacted { background: #2563eb; }
+  .dd-dot.message_taken, .dd-dot.pending { background: #d97706; }
+  .dd-dot.fallback { background: #dc2626; }
+  .dd-dot.hangup { background: #6b7280; }
+  .dd-dot.live { background: #16a34a; }
+  .dd-dot.done { background: #16a34a; }
+  .dd-btn.routed, .dd-btn.contacted { background: #dbeafe; color: #1d4ed8; }
+  .dd-btn.message_taken, .dd-btn.pending { background: #fef3c7; color: #b45309; }
+  .dd-btn.fallback { background: #fee2e2; color: #b91c1c; }
+  .dd-btn.hangup { background: #e5e7eb; color: #4b5563; }
+  .dd-btn.live, .dd-btn.done { background: #dcfce7; color: #15803d; }
+  @media (prefers-color-scheme: dark) {
+    .dd-btn.routed, .dd-btn.contacted { background: #1e3a8a55; color: #93c5fd; }
+    .dd-btn.message_taken, .dd-btn.pending { background: #78350f55; color: #fcd34d; }
+    .dd-btn.fallback { background: #7f1d1d55; color: #fca5a5; }
+    .dd-btn.hangup { background: #37415155; color: #d1d5db; }
+    .dd-btn.live, .dd-btn.done { background: #14532d55; color: #86efac; }
+  }
+  .dd-menu {
+    display: none; position: absolute; z-index: 30; top: calc(100% + 6px); left: 0;
+    min-width: 170px; background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; box-shadow: var(--shadow); padding: 6px;
+  }
+  .dd-menu.open { display: block; }
+  .dd-item {
+    display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: 7px;
+    font-size: 13px; cursor: pointer; color: var(--text);
+  }
+  .dd-item:hover { background: var(--accent-weak); }
+  .dd-item.active { font-weight: 600; }
 
   #detail { flex: 1; overflow-y: auto; padding: 28px 32px; }
   #detail .inner { max-width: 1100px; }
@@ -193,12 +232,76 @@ let selectedId = null;
 let query = "";
 const EDITABLE_OUTCOMES = ["routed", "message_taken", "fallback", "hangup"];
 
+// How the call ended — set automatically by the call-handling code, but
+// editable here for when it got misclassified.
+const OUTCOME_OPTIONS = [
+  { value: "routed", label: "Routed", dot: "routed", hint: "Connected to a person at an extension." },
+  { value: "message_taken", label: "Message taken", dot: "message_taken", hint: "No one was free — the AI took down the caller's details for someone to call back." },
+  { value: "fallback", label: "Fallback", dot: "fallback", hint: "Something went wrong (STT/TTS/system) and the call had to be handed off." },
+  { value: "hangup", label: "Hangup", dot: "hangup", hint: "The caller hung up before anything useful happened." },
+];
+
+// Separate from outcome: whether staff has actually followed up on a
+// message/lead yet. Defaults to "pending" until someone sets it.
+const FOLLOWUP_OPTIONS = [
+  { value: "pending", label: "Pending", dot: "pending" },
+  { value: "contacted", label: "Contacted", dot: "contacted" },
+  { value: "done", label: "Done", dot: "done" },
+];
+
 function badgeClass(outcome) {
   return outcome || "live";
 }
 
 function outcomeLabel(outcome) {
   return (outcome || "in progress").replace(/_/g, " ");
+}
+
+function ddHtml(id, options, current, fallbackLabel, fallbackDot) {
+  const cur = options.find((o) => o.value === current);
+  const label = cur ? cur.label : (fallbackLabel || "—");
+  const dot = cur ? cur.dot : (fallbackDot || "live");
+  return `
+    <div class="dd">
+      <button type="button" class="dd-btn ${dot}" id="${id}">
+        <span class="dd-dot ${dot}"></span>${escapeHtml(label)}
+        <svg class="dd-caret" viewBox="0 0 10 6" width="9" height="6"><path d="M1 1l4 4 4-4" stroke="currentColor" stroke-width="1.5" fill="none"/></svg>
+      </button>
+      <div class="dd-menu" id="${id}-menu">
+        ${options.map((o) => `<div class="dd-item ${o.value === current ? "active" : ""}" data-value="${o.value}" title="${escapeHtml(o.hint || "")}"><span class="dd-dot ${o.dot}"></span>${escapeHtml(o.label)}</div>`).join("")}
+      </div>
+    </div>`;
+}
+
+function wireDropdown(id, onSelect) {
+  const btn = document.getElementById(id);
+  const menu = document.getElementById(id + "-menu");
+  if (!btn || !menu) return;
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    document.querySelectorAll(".dd-menu.open").forEach((m) => { if (m !== menu) m.classList.remove("open"); });
+    menu.classList.toggle("open");
+  });
+  menu.querySelectorAll(".dd-item").forEach((item) => {
+    item.addEventListener("click", (e) => {
+      e.stopPropagation();
+      menu.classList.remove("open");
+      onSelect(item.dataset.value);
+    });
+  });
+}
+
+document.addEventListener("click", () => {
+  document.querySelectorAll(".dd-menu.open").forEach((m) => m.classList.remove("open"));
+});
+
+async function patchCall(callId, patch) {
+  const res = await fetch(`/api/calls/${encodeURIComponent(callId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) throw new Error(await res.text());
 }
 
 function initials(caller) {
@@ -358,12 +461,11 @@ function renderDetail() {
         <div class="grid-fields">
           <div class="field">
             <label>Outcome</label>
-            <div class="val">
-              <select class="pill-select ${badgeClass(call.outcome)}" id="outcome-select">
-                ${!call.outcome ? '<option value="" disabled selected>in progress</option>' : ""}
-                ${EDITABLE_OUTCOMES.map((o) => `<option value="${o}" ${o === call.outcome ? "selected" : ""}>${outcomeLabel(o)}</option>`).join("")}
-              </select>
-            </div>
+            <div class="val">${ddHtml("outcome-dd", OUTCOME_OPTIONS, call.outcome, "In progress")}</div>
+          </div>
+          <div class="field">
+            <label>Follow-up</label>
+            <div class="val">${ddHtml("followup-dd", FOLLOWUP_OPTIONS, call.followUpStatus || "pending")}</div>
           </div>
           ${call.routedTo ? `<div class="field"><label>Routed to</label><div class="val">${escapeHtml(call.routedTo)}</div></div>` : ""}
           <div class="field"><label>Started</label><div class="val">${fmtTime(call.startedAt)}</div></div>
@@ -380,27 +482,24 @@ function renderDetail() {
     </div>
   `;
 
-  document.getElementById("outcome-select").addEventListener("change", async (e) => {
-    const select = e.target;
-    const newOutcome = select.value;
-    const previousClass = EDITABLE_OUTCOMES.concat("live").find((o) => select.classList.contains(o));
-    select.disabled = true;
+  wireDropdown("outcome-dd", async (value) => {
     try {
-      const res = await fetch(`/api/calls/${encodeURIComponent(call.callId)}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ outcome: newOutcome }),
-      });
-      if (!res.ok) throw new Error(await res.text());
-      call.outcome = newOutcome;
-      if (previousClass) select.classList.remove(previousClass);
-      select.classList.add(newOutcome);
+      await patchCall(call.callId, { outcome: value });
+      call.outcome = value;
       render();
+      renderDetail();
     } catch (err) {
       alert("Failed to update outcome: " + err.message);
-      select.value = call.outcome || "";
-    } finally {
-      select.disabled = false;
+    }
+  });
+
+  wireDropdown("followup-dd", async (value) => {
+    try {
+      await patchCall(call.callId, { followUpStatus: value });
+      call.followUpStatus = value;
+      renderDetail();
+    } catch (err) {
+      alert("Failed to update follow-up status: " + err.message);
     }
   });
 }
@@ -421,7 +520,9 @@ async function refresh() {
     const res = await fetch("/api/calls");
     calls = await res.json();
     render();
-    renderDetail();
+    // Skip rebuilding the detail panel while a dropdown is open — it would
+    // otherwise get wiped out mid-click every 3s by this poll.
+    if (!document.querySelector(".dd-menu.open")) renderDetail();
   } catch (err) {
     document.getElementById("rows").innerHTML = '<div class="empty">Failed to load calls: ' + err + '</div>';
   }
