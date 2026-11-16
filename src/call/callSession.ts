@@ -129,7 +129,12 @@ async function handleInvite(sip: SipClient, call: IncomingCall, store: CallRecor
 
     pendingUtterance.push(partial.text.trim());
     if (debounceTimer) clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(scheduleTurn, 900);
+    // 900ms was still too short — a live caller's mid-sentence pause ("Can I"
+    // ... pause ... "know what brand of PBX you are offering?") exceeded it
+    // and got split into two turns anyway (2026-11-16). 1800ms costs a bit
+    // more latency before the AI responds but matches normal conversational
+    // thinking-pauses better.
+    debounceTimer = setTimeout(scheduleTurn, 1800);
   });
 
   // Speak first so the caller (and whoever's testing) has immediate proof
