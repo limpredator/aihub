@@ -174,13 +174,23 @@ function speakMulaw(rtp: RtpSession, pcm16le: Buffer): void {
   const pcm16 = new Int16Array(pcm16le.buffer, pcm16le.byteOffset, pcm16le.byteLength / 2);
   const mulaw = encodeMulaw(pcm16);
 
-  let offset = 0;
+  // Schedule each frame against an absolute start time rather than chaining
+  // setTimeout(fn, 20) off of itself — the chained version drifts by
+  // whatever each tick's actual overhead is (event loop load, STT/LLM work
+  // happening concurrently), and that drift accumulates over hundreds of
+  // frames into real, audible extra delay between words. Confirmed live
+  // (2026-11-16) as the cause of replies sounding "distorted and slow" even
+  // after the TTS audio and mu-law encoding were both verified correct.
+  const start = Date.now();
+  let frameIndex = 0;
   const sendNext = () => {
+    const offset = frameIndex * FRAME_BYTES;
     if (offset >= mulaw.length) return;
     const frame = mulaw.subarray(offset, offset + FRAME_BYTES);
     rtp.sendMulawFrame(Buffer.from(frame));
-    offset += FRAME_BYTES;
-    setTimeout(sendNext, 20);
+    frameIndex++;
+    const target = start + frameIndex * 20;
+    setTimeout(sendNext, Math.max(0, target - Date.now()));
   };
   sendNext();
 }
