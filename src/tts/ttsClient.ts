@@ -44,7 +44,8 @@ export class ElevenLabsTtsClient implements TtsClient {
     });
 
     if (!res.ok) {
-      throw new Error(`ElevenLabs TTS request failed: ${res.status} ${res.statusText}`);
+      const body = await res.text().catch(() => "");
+      throw new Error(`ElevenLabs TTS request failed: ${res.status} ${res.statusText} — ${body}`);
     }
 
     return Buffer.from(await res.arrayBuffer());
