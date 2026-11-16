@@ -33,6 +33,11 @@ export const config = {
     // library voices via the API" on this account, so don't assume any
     // premade voice ID works without checking on a free plan.
     voiceId: process.env.TTS_VOICE_ID || "EXAVITQu4vr4xnSDxMaL",
+    // ElevenLabs voice_settings.speed, valid range 0.7-1.2 (1.0 = normal).
+    // Default voice read too fast on live calls, in English, Malay and
+    // Mandarin alike (2026-11-16) — 0.85 is a noticeable but still natural
+    // slowdown.
+    speed: Number(process.env.TTS_SPEED || 0.85),
   },
   healthCheckIntervalMs: Number(process.env.HEALTH_CHECK_INTERVAL_MS || 15000),
 };

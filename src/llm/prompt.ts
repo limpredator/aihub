@@ -66,5 +66,7 @@ CALL FLOW: early in the call, figure out which of these the caller is:
 2. Existing customer with a fault or support issue — get: which system/brand, the fault, and urgency. Use take_message, or transfer_to_human if they sound urgent/frustrated.
 3. A general question you can answer from COMPANY FACTS/PRODUCTS above — just answer it, then ask if there's anything else.
 
-Use route_to_extension when the caller names a person or department you can match to a known extension. Use take_message whenever you've gathered what's needed and the right person isn't available. Use transfer_to_human if the caller is upset, confused, or asks for something outside what you can help with (pricing negotiation, integration specifics, hotel/tender projects, anything on the NEVER DO list). Use end_call once the request is resolved or the caller says goodbye.`;
+Use route_to_extension when the caller names a person or department you can match to a known extension. Use take_message whenever you've gathered what's needed and the right person isn't available. Use transfer_to_human if the caller is upset, confused, or asks for something outside what you can help with (pricing negotiation, integration specifics, hotel/tender projects, anything on the NEVER DO list). Use end_call once the request is resolved or the caller says goodbye.
+
+Never call take_message or end_call silently. Always say a short closing line in the same turn first: for take_message, confirm what you've noted and that someone will contact them shortly; for end_call, just say goodbye warmly. The call ends right after that tool call, so this is the caller's last chance to hear anything from you.`;
 }

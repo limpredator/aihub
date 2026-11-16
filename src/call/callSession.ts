@@ -17,7 +17,7 @@ import { config } from "../config.js";
 
 function buildTtsClient(): TtsClient {
   if (config.tts.provider === "elevenlabs" && config.tts.apiKey) {
-    return new ElevenLabsTtsClient({ apiKey: config.tts.apiKey, voiceId: config.tts.voiceId });
+    return new ElevenLabsTtsClient({ apiKey: config.tts.apiKey, voiceId: config.tts.voiceId, speed: config.tts.speed });
   }
   return new UnconfiguredTtsClient();
 }
@@ -131,7 +131,19 @@ async function handleInvite(sip: SipClient, call: IncomingCall, store: CallRecor
       return;
     }
 
-    if (turn.reply) await speakReply(turn.reply);
+    if (turn.reply) {
+      await speakReply(turn.reply);
+    } else if (turn.toolCalls.some((tc) => tc.function.name === "take_message" || tc.function.name === "end_call")) {
+      // The prompt tells the model to always include a closing line with
+      // these two tool calls, but it doesn't always (seen live 2026-11-16:
+      // call ended right on the take_message tool call, no reply text, so
+      // the caller just heard the line go dead). Don't let a missed reply
+      // mean dead silence before hangup — say something in all three
+      // supported languages as a safety net.
+      await speakReply(
+        "Thank you, someone will contact you shortly. Terima kasih, kami akan menghubungi anda tidak lama lagi. 谢谢,我们会尽快联系您。",
+      );
+    }
 
     for (const toolCall of turn.toolCalls) {
       console.log(`[call ${call.callId}] tool call: ${toolCall.function.name}(${toolCall.function.arguments})`);

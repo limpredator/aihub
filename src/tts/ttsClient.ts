@@ -24,6 +24,8 @@ export interface ElevenLabsTtsOptions {
   apiKey: string;
   /** Voice to speak with — any ElevenLabs voice ID works across languages with eleven_multilingual_v2. */
   voiceId: string;
+  /** voice_settings.speed, valid range 0.7-1.2 (1.0 = normal). */
+  speed: number;
 }
 
 export class ElevenLabsTtsClient implements TtsClient {
@@ -40,7 +42,11 @@ export class ElevenLabsTtsClient implements TtsClient {
       },
       // No language_code: eleven_multilingual_v2 doesn't support that
       // parameter — language is inferred from the text itself.
-      body: JSON.stringify({ text, model_id: "eleven_multilingual_v2" }),
+      body: JSON.stringify({
+        text,
+        model_id: "eleven_multilingual_v2",
+        voice_settings: { speed: this.opts.speed },
+      }),
     });
 
     if (!res.ok) {
