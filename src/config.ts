@@ -27,10 +27,12 @@ export const config = {
   tts: {
     provider: process.env.TTS_PROVIDER || "",
     apiKey: process.env.TTS_API_KEY || "",
-    // ElevenLabs voice ID (any premade or cloned voice works across
-    // languages with eleven_multilingual_v2). Defaults to "Rachel", one of
-    // ElevenLabs' standard premade voices.
-    voiceId: process.env.TTS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM",
+    // ElevenLabs voice ID. Defaults to "Bella" — confirmed working on a
+    // free-tier API key (2026-11-16); several other premade voices
+    // (Rachel, Elli, Domi, Sam) returned 402 "Free users cannot use
+    // library voices via the API" on this account, so don't assume any
+    // premade voice ID works without checking on a free plan.
+    voiceId: process.env.TTS_VOICE_ID || "EXAVITQu4vr4xnSDxMaL",
   },
   healthCheckIntervalMs: Number(process.env.HEALTH_CHECK_INTERVAL_MS || 15000),
 };
