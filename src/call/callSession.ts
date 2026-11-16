@@ -5,6 +5,7 @@ import { encodeMulaw, decodeMulaw } from "../media/g711.js";
 import { SpeechmaticsRealtimeClient } from "../stt/speechmatics.js";
 import { runTurn, summarizeTranscript, type ChatMessage } from "../llm/openrouter.js";
 import { buildSystemPrompt } from "../llm/prompt.js";
+import { loadTenantConfig } from "../config/tenantConfig.js";
 import { ElevenLabsTtsClient, UnconfiguredTtsClient, type TtsClient } from "../tts/ttsClient.js";
 import type { CallRecordStore } from "../callStore/callRecordStore.js";
 import { config } from "../config.js";
@@ -46,7 +47,11 @@ async function handleInvite(sip: SipClient, call: IncomingCall, store: CallRecor
   console.log(`[call ${call.callId}] answering with SDP address ${localAddress}:${localPort}`);
   call.answer(buildAnswer({ localAddress, localPort }));
 
-  const messages: ChatMessage[] = [{ role: "system", content: buildSystemPrompt(config.ringGroup.extensions) }];
+  // Loaded fresh per call (cheap file read) rather than cached at startup, so
+  // an edit saved from the dashboard's Company Profile tab takes effect on
+  // the next call without restarting the gateway.
+  const tenantConfig = await loadTenantConfig();
+  const messages: ChatMessage[] = [{ role: "system", content: buildSystemPrompt(tenantConfig, config.ringGroup.extensions) }];
 
   // Guards against double cleanup when both a BYE and a tool-call/fail-open
   // path try to tear down the same call.

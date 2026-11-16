@@ -9,3 +9,5 @@ Thumbs.db
 coverage/
 # Call records contain caller details and conversation transcripts — never commit these.
 data/calls/
+# Edited from the dashboard's Company Profile tab — runtime state, not source; falls back to DEFAULT_TENANT_CONFIG when absent.
+data/tenant-config.json

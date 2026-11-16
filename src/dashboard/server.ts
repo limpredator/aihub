@@ -9,12 +9,24 @@ import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { CallRecord } from "../callStore/callRecordStore.js";
 import { FileCallRecordStore } from "../callStore/callRecordStore.js";
+import { loadTenantConfig, saveTenantConfig, type TenantConfig } from "../config/tenantConfig.js";
 
 const CALLS_DIR = join(process.cwd(), "data", "calls");
 const PORT = Number(process.env.DASHBOARD_PORT || 3900);
 const store = new FileCallRecordStore(CALLS_DIR);
 const EDITABLE_OUTCOMES = ["routed", "message_taken", "fallback", "hangup"];
 const EDITABLE_FOLLOWUP_STATUSES = ["pending", "contacted", "done"];
+const TENANT_CONFIG_FIELDS = [
+  "companyName",
+  "companyDescription",
+  "languages",
+  "companyFacts",
+  "products",
+  "howItFitsTogether",
+  "simpleTerms",
+  "quickAnswers",
+  "neverDoThis",
+] as const;
 
 async function listCalls(): Promise<CallRecord[]> {
   let files: string[];
@@ -95,6 +107,43 @@ const server = createServer(async (req, res) => {
     });
     res.writeHead(204);
     res.end();
+    return;
+  }
+
+  if (req.method === "GET" && req.url === "/api/tenant-config") {
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(await loadTenantConfig()));
+    return;
+  }
+
+  if (req.method === "PUT" && req.url === "/api/tenant-config") {
+    let body = "";
+    for await (const chunk of req) body += chunk;
+
+    let patch: Record<string, unknown>;
+    try {
+      patch = JSON.parse(body);
+    } catch {
+      res.writeHead(400);
+      res.end("Invalid JSON body");
+      return;
+    }
+
+    const cleaned: Partial<TenantConfig> = {};
+    for (const field of TENANT_CONFIG_FIELDS) {
+      const value = patch[field];
+      if (value === undefined) continue;
+      if (typeof value !== "string" || !value.trim()) {
+        res.writeHead(400);
+        res.end(`${field} must be a non-empty string`);
+        return;
+      }
+      cleaned[field] = value;
+    }
+
+    const saved = await saveTenantConfig(cleaned);
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify(saved));
     return;
   }
 
