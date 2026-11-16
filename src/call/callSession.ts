@@ -100,7 +100,12 @@ async function handleInvite(sip: SipClient, call: IncomingCall, store: CallRecor
       await speech.done;
       cancelCurrentSpeech = null;
     } catch (err) {
-      console.warn(`[call ${call.callId}] TTS unavailable, would have said: "${text}" (${(err as Error).message})`);
+      // A caller who hears nothing is stuck either way, whether TTS errored
+      // or (seen live 2026-11-16, before the timeout above existed) just
+      // hung forever — so treat it the same as a dropped STT connection and
+      // hand off to a human rather than leaving them in silence.
+      console.warn(`[call ${call.callId}] TTS failed, would have said: "${text}" (${(err as Error).message})`);
+      if (!ended) failOpen(sip, call, store, endMedia);
     }
   };
 

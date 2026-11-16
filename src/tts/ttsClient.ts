@@ -34,20 +34,38 @@ export class ElevenLabsTtsClient implements TtsClient {
   async synthesize(text: string, _language: "en" | "ms" | "cmn"): Promise<Buffer> {
     const url = `https://api.elevenlabs.io/v1/text-to-speech/${this.opts.voiceId}?output_format=pcm_8000`;
 
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "xi-api-key": this.opts.apiKey,
-        "Content-Type": "application/json",
-      },
-      // No language_code: eleven_multilingual_v2 doesn't support that
-      // parameter — language is inferred from the text itself.
-      body: JSON.stringify({
-        text,
-        model_id: "eleven_multilingual_v2",
-        voice_settings: { speed: this.opts.speed },
-      }),
-    });
+    // fetch() has no default timeout — a stalled ElevenLabs response (seen
+    // live 2026-11-16: request just never came back, no error, no timeout)
+    // left this await pending forever, which deadlocked the whole call since
+    // turns run in a strict chain. 12s is generous for a few-sentence reply.
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12_000);
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "xi-api-key": this.opts.apiKey,
+          "Content-Type": "application/json",
+        },
+        // No language_code: eleven_multilingual_v2 doesn't support that
+        // parameter — language is inferred from the text itself.
+        body: JSON.stringify({
+          text,
+          model_id: "eleven_multilingual_v2",
+          voice_settings: { speed: this.opts.speed },
+        }),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      if ((err as Error).name === "AbortError") {
+        throw new Error("ElevenLabs TTS request timed out after 12s");
+      }
+      throw err;
+    } finally {
+      clearTimeout(timeout);
+    }
 
     if (!res.ok) {
       const body = await res.text().catch(() => "");
