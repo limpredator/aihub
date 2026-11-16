@@ -10,6 +10,7 @@ import { join } from "node:path";
 import type { CallRecord } from "../callStore/callRecordStore.js";
 import { FileCallRecordStore } from "../callStore/callRecordStore.js";
 import { loadTenantConfig, saveTenantConfig, type TenantConfig } from "../config/tenantConfig.js";
+import { draftTenantConfigFromText, extractTextFromPdf, extractTextFromPptx, extractTextFromUrl } from "../config/importSource.js";
 
 const CALLS_DIR = join(process.cwd(), "data", "calls");
 const PORT = Number(process.env.DASHBOARD_PORT || 3900);
@@ -144,6 +145,62 @@ const server = createServer(async (req, res) => {
     const saved = await saveTenantConfig(cleaned);
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(saved));
+    return;
+  }
+
+  if (req.method === "POST" && req.url === "/api/tenant-config/import") {
+    let body = "";
+    for await (const chunk of req) {
+      body += chunk;
+      // A base64-encoded PDF/PPTX inflates ~33% over the original file size;
+      // this is a generous cap for an admin-only onboarding helper, not a
+      // public upload endpoint, just enough to stop an accidental huge body
+      // from holding the whole thing in memory.
+      if (body.length > 25_000_000) {
+        res.writeHead(413);
+        res.end("File too large");
+        return;
+      }
+    }
+
+    let request: { source?: string; url?: string; filename?: string; contentBase64?: string; text?: string };
+    try {
+      request = JSON.parse(body);
+    } catch {
+      res.writeHead(400);
+      res.end("Invalid JSON body");
+      return;
+    }
+
+    try {
+      let text: string;
+      if (request.source === "text") {
+        if (!request.text?.trim()) throw new Error("Missing text");
+        text = request.text;
+      } else if (request.source === "url") {
+        if (!request.url) throw new Error("Missing url");
+        text = await extractTextFromUrl(request.url);
+      } else if (request.source === "file") {
+        if (!request.filename || !request.contentBase64) throw new Error("Missing filename or contentBase64");
+        const buffer = Buffer.from(request.contentBase64, "base64");
+        if (/\.pdf$/i.test(request.filename)) {
+          text = await extractTextFromPdf(buffer);
+        } else if (/\.pptx$/i.test(request.filename)) {
+          text = await extractTextFromPptx(buffer);
+        } else {
+          throw new Error("Only .pdf and .pptx files are supported");
+        }
+      } else {
+        throw new Error('source must be "text", "url" or "file"');
+      }
+
+      const draft = await draftTenantConfigFromText(text);
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(draft));
+    } catch (err) {
+      res.writeHead(422);
+      res.end((err as Error).message);
+    }
     return;
   }
 

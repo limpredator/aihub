@@ -228,6 +228,52 @@
   .save-status { font-size: 12.5px; color: var(--text-dim); }
   .save-status.ok { color: #15803d; }
   .save-status.err { color: #b91c1c; }
+
+  .import-card label { display: block; font-size: 11px; font-weight: 600; color: var(--text-faint); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 6px; }
+  .import-card > .hint { font-size: 12.5px; color: var(--text-dim); margin-bottom: 12px; }
+  #import-text {
+    width: 100%; min-height: 120px; font: inherit; font-size: 13.5px; color: var(--text);
+    background: var(--bg); border: 1px solid var(--border); border-radius: 9px;
+    padding: 10px 12px; resize: vertical; outline: none; line-height: 1.5;
+  }
+  #import-text:focus { border-color: var(--accent); }
+  .import-or {
+    display: flex; align-items: center; gap: 10px; margin: 14px 0;
+    font-size: 11px; font-weight: 600; color: var(--text-faint); text-transform: uppercase; letter-spacing: .04em;
+  }
+  .import-or::before, .import-or::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+  .import-row { display: flex; gap: 8px; margin-bottom: 10px; }
+  .import-row input[type="text"] {
+    flex: 1; font: inherit; font-size: 13.5px; color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 9px; padding: 9px 11px; outline: none;
+  }
+  .import-row input[type="text"]:focus { border-color: var(--accent); }
+  .import-row input[type="file"] {
+    flex: 1; font: inherit; font-size: 13px; color: var(--text-dim);
+  }
+  .btn-secondary {
+    font: inherit; font-size: 13px; font-weight: 600; color: var(--text); background: var(--border);
+    border: none; border-radius: 9px; padding: 9px 14px; cursor: pointer; white-space: nowrap;
+  }
+  .btn-secondary:hover { background: var(--accent-weak); color: var(--accent); }
+  .btn-secondary:disabled { opacity: .6; cursor: default; }
+  .import-hint { font-size: 11.5px; color: var(--text-faint); margin-top: -4px; margin-bottom: 14px; }
+  .import-status { font-size: 12.5px; color: var(--text-dim); margin-top: 10px; }
+  .import-status.ok { color: #15803d; }
+  .import-status.err { color: #b91c1c; }
+
+  .details-card { padding: 0; overflow: hidden; }
+  .details-card > summary {
+    list-style: none; cursor: pointer; padding: 14px 18px; font-size: 13.5px; font-weight: 600;
+    display: flex; align-items: center; justify-content: space-between; color: var(--text);
+  }
+  .details-card > summary::-webkit-details-marker { display: none; }
+  .details-card > summary::after {
+    content: "▸"; color: var(--text-faint); font-size: 11px; transition: transform .15s;
+  }
+  .details-card[open] > summary::after { transform: rotate(90deg); }
+  .details-card > summary .sub { font-size: 12px; font-weight: normal; color: var(--text-faint); margin-left: 8px; }
+  .details-card .details-body { padding: 4px 18px 18px; }
 </style>
 </head>
 <body>
@@ -568,23 +614,43 @@ async function renderProfile() {
     <div class="inner">
       <div class="detail-head"><div><h2>Company profile</h2><div class="meta-line">This is what the AI receptionist knows about your business — edits apply to the next call, no restart needed.</div></div></div>
 
-      <div class="card">
-        <form id="profile-form">
-          ${TENANT_CONFIG_FIELDS.map((f) => `
-            <div class="form-field">
-              <label for="tc-${f.key}">${escapeHtml(f.label)}</label>
-              ${f.hint ? `<div class="hint">${escapeHtml(f.hint)}</div>` : ""}
-              ${f.kind === "textarea"
-                ? `<textarea id="tc-${f.key}" name="${f.key}">${escapeHtml(tenantConfig[f.key] || "")}</textarea>`
-                : `<input id="tc-${f.key}" name="${f.key}" type="text" value="${escapeHtml(tenantConfig[f.key] || "")}" />`}
-            </div>
-          `).join("")}
-          <div class="save-bar">
-            <button type="submit" class="btn-primary" id="profile-save-btn">Save</button>
-            <span class="save-status" id="profile-save-status"></span>
-          </div>
-        </form>
+      <div class="card import-card">
+        <label>Tell us about your business</label>
+        <div class="hint">Paste or type anything — a description, hours, services, pricing policy, FAQs — and we'll turn it into the AI's knowledge base for you to review below.</div>
+        <textarea id="import-text" placeholder="e.g. We're Cerdik Tech, a Petaling Jaya-based supplier of business phone systems. We sell IP-PABX switchboards and VoIP gateways. Open Mon–Fri 9am–6pm. Never quote prices over the phone, refer callers to the quote form."></textarea>
+
+        <div class="import-or">or use a link / file</div>
+        <div class="import-row">
+          <input type="text" id="import-url" placeholder="https://yourcompany.com" />
+        </div>
+        <div class="import-row">
+          <input type="file" id="import-file" accept=".pdf,.pptx" />
+        </div>
+
+        <button type="button" class="btn-primary" id="import-draft-btn">Draft profile</button>
+        <div class="import-status" id="import-status"></div>
       </div>
+
+      <details class="card details-card" id="profile-details">
+        <summary>Review &amp; edit the details<span class="sub">— what you just drafted, field by field</span></summary>
+        <div class="details-body">
+          <form id="profile-form">
+            ${TENANT_CONFIG_FIELDS.map((f) => `
+              <div class="form-field">
+                <label for="tc-${f.key}">${escapeHtml(f.label)}</label>
+                ${f.hint ? `<div class="hint">${escapeHtml(f.hint)}</div>` : ""}
+                ${f.kind === "textarea"
+                  ? `<textarea id="tc-${f.key}" name="${f.key}">${escapeHtml(tenantConfig[f.key] || "")}</textarea>`
+                  : `<input id="tc-${f.key}" name="${f.key}" type="text" value="${escapeHtml(tenantConfig[f.key] || "")}" />`}
+              </div>
+            `).join("")}
+            <div class="save-bar">
+              <button type="submit" class="btn-primary" id="profile-save-btn">Save</button>
+              <span class="save-status" id="profile-save-status"></span>
+            </div>
+          </form>
+        </div>
+      </details>
     </div>
   `;
 
@@ -614,6 +680,68 @@ async function renderProfile() {
       status.textContent = "Failed to save: " + err.message;
     } finally {
       btn.disabled = false;
+    }
+  });
+
+  function applyDraft(draft) {
+    TENANT_CONFIG_FIELDS.forEach((f) => {
+      if (draft[f.key]) document.getElementById("tc-" + f.key).value = draft[f.key];
+    });
+  }
+
+  async function runImport(payload, buttons) {
+    const status = document.getElementById("import-status");
+    buttons.forEach((b) => (b.disabled = true));
+    status.className = "import-status";
+    status.textContent = "Reading and drafting — this can take up to 30s…";
+    try {
+      const res = await fetch("/api/tenant-config/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const draft = await res.json();
+      applyDraft(draft);
+      document.getElementById("profile-details").open = true;
+      status.className = "import-status ok";
+      status.textContent = "Draft ready — review it below, then click Save.";
+    } catch (err) {
+      status.className = "import-status err";
+      status.textContent = "Import failed: " + err.message;
+    } finally {
+      buttons.forEach((b) => (b.disabled = false));
+    }
+  }
+
+  const importDraftBtn = document.getElementById("import-draft-btn");
+
+  importDraftBtn.addEventListener("click", () => {
+    const status = document.getElementById("import-status");
+    const text = document.getElementById("import-text").value.trim();
+    const url = document.getElementById("import-url").value.trim();
+    const file = document.getElementById("import-file").files[0];
+
+    // Whichever of the three the person filled in wins, in this order —
+    // typed/pasted text is the primary path the form leads with.
+    if (text) {
+      runImport({ source: "text", text }, [importDraftBtn]);
+    } else if (url) {
+      runImport({ source: "url", url }, [importDraftBtn]);
+    } else if (file) {
+      const reader = new FileReader();
+      reader.onload = () => {
+        const contentBase64 = reader.result.split(",")[1];
+        runImport({ source: "file", filename: file.name, contentBase64 }, [importDraftBtn]);
+      };
+      reader.onerror = () => {
+        status.className = "import-status err";
+        status.textContent = "Failed to read file.";
+      };
+      reader.readAsDataURL(file);
+    } else {
+      status.className = "import-status err";
+      status.textContent = "Type something, paste a link, or choose a file first.";
     }
   });
 }
