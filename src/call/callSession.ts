@@ -65,7 +65,12 @@ async function handleInvite(sip: SipClient, call: IncomingCall, store: CallRecor
     messages.push({ role: "assistant", content: text });
     try {
       const audio = await tts.synthesize(text, "en");
-      speakMulaw(rtp, audio);
+      // Must await: speakMulaw paces frames over time rather than sending
+      // them all at once, so a caller who speaks again — or two finals that
+      // each trigger a turn — can otherwise start a second reply's frames
+      // before the first reply's are done going out, interleaving both
+      // replies' audio on the wire ("cross pathing", heard live 2026-11-16).
+      await speakMulaw(rtp, audio);
     } catch (err) {
       console.warn(`[call ${call.callId}] TTS unavailable, would have said: "${text}" (${(err as Error).message})`);
     }
@@ -80,6 +85,17 @@ async function handleInvite(sip: SipClient, call: IncomingCall, store: CallRecor
   // Debounce: buffer finals and only run a turn once the caller's been
   // quiet for a bit, joining anything buffered in the meantime.
   const pendingUtterance: string[] = [];
+
+  // Serializes turns so a debounce fire that lands while the previous
+  // turn's LLM call or reply audio is still in flight queues behind it
+  // instead of running concurrently — the other half of the "cross
+  // pathing" overlapping-audio fix above.
+  let turnChain: Promise<void> = Promise.resolve();
+  const scheduleTurn = () => {
+    turnChain = turnChain.then(runPendingTurn).catch((err) => {
+      console.error(`[call ${call.callId}] turn handling failed:`, err);
+    });
+  };
 
   const runPendingTurn = async () => {
     debounceTimer = null;
@@ -113,9 +129,7 @@ async function handleInvite(sip: SipClient, call: IncomingCall, store: CallRecor
 
     pendingUtterance.push(partial.text.trim());
     if (debounceTimer) clearTimeout(debounceTimer);
-    debounceTimer = setTimeout(() => {
-      runPendingTurn().catch((err) => console.error(`[call ${call.callId}] turn handling failed:`, err));
-    }, 900);
+    debounceTimer = setTimeout(scheduleTurn, 900);
   });
 
   // Speak first so the caller (and whoever's testing) has immediate proof
@@ -193,29 +207,34 @@ function failOpen(sip: SipClient, call: IncomingCall, store: CallRecordStore, en
   store.update(call.callId, { outcome: "fallback", routedTo: fallback }).catch(() => {});
 }
 
-/** Encodes PCM16 (as produced by a TTS vendor) to mu-law and sends it as paced RTP frames. */
-function speakMulaw(rtp: RtpSession, pcm16le: Buffer): void {
+/** Encodes PCM16 (as produced by a TTS vendor) to mu-law and sends it as paced RTP frames. Resolves once the last frame has been sent. */
+function speakMulaw(rtp: RtpSession, pcm16le: Buffer): Promise<void> {
   const FRAME_BYTES = 160; // 160 samples = 20ms @ 8kHz, one byte per mu-law sample
   const pcm16 = new Int16Array(pcm16le.buffer, pcm16le.byteOffset, pcm16le.byteLength / 2);
   const mulaw = encodeMulaw(pcm16);
 
-  // Schedule each frame against an absolute start time rather than chaining
-  // setTimeout(fn, 20) off of itself — the chained version drifts by
-  // whatever each tick's actual overhead is (event loop load, STT/LLM work
-  // happening concurrently), and that drift accumulates over hundreds of
-  // frames into real, audible extra delay between words. Confirmed live
-  // (2026-11-16) as the cause of replies sounding "distorted and slow" even
-  // after the TTS audio and mu-law encoding were both verified correct.
-  const start = Date.now();
-  let frameIndex = 0;
-  const sendNext = () => {
-    const offset = frameIndex * FRAME_BYTES;
-    if (offset >= mulaw.length) return;
-    const frame = mulaw.subarray(offset, offset + FRAME_BYTES);
-    rtp.sendMulawFrame(Buffer.from(frame));
-    frameIndex++;
-    const target = start + frameIndex * 20;
-    setTimeout(sendNext, Math.max(0, target - Date.now()));
-  };
-  sendNext();
+  return new Promise((resolve) => {
+    // Schedule each frame against an absolute start time rather than chaining
+    // setTimeout(fn, 20) off of itself — the chained version drifts by
+    // whatever each tick's actual overhead is (event loop load, STT/LLM work
+    // happening concurrently), and that drift accumulates over hundreds of
+    // frames into real, audible extra delay between words. Confirmed live
+    // (2026-11-16) as the cause of replies sounding "distorted and slow" even
+    // after the TTS audio and mu-law encoding were both verified correct.
+    const start = Date.now();
+    let frameIndex = 0;
+    const sendNext = () => {
+      const offset = frameIndex * FRAME_BYTES;
+      if (offset >= mulaw.length) {
+        resolve();
+        return;
+      }
+      const frame = mulaw.subarray(offset, offset + FRAME_BYTES);
+      rtp.sendMulawFrame(Buffer.from(frame));
+      frameIndex++;
+      const target = start + frameIndex * 20;
+      setTimeout(sendNext, Math.max(0, target - Date.now()));
+    };
+    sendNext();
+  });
 }
