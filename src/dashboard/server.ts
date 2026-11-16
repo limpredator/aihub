@@ -8,9 +8,12 @@ import { createServer } from "node:http";
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { CallRecord } from "../callStore/callRecordStore.js";
+import { FileCallRecordStore } from "../callStore/callRecordStore.js";
 
 const CALLS_DIR = join(process.cwd(), "data", "calls");
 const PORT = Number(process.env.DASHBOARD_PORT || 3900);
+const store = new FileCallRecordStore(CALLS_DIR);
+const EDITABLE_OUTCOMES = ["routed", "message_taken", "fallback", "hangup"];
 
 async function listCalls(): Promise<CallRecord[]> {
   let files: string[];
@@ -44,6 +47,40 @@ const server = createServer(async (req, res) => {
     const calls = await listCalls();
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify(calls));
+    return;
+  }
+
+  if (req.method === "PATCH" && req.url?.startsWith("/api/calls/")) {
+    const callId = decodeURIComponent(req.url.slice("/api/calls/".length));
+    // callId becomes a filename on disk (callRecordStore.pathFor) — reject
+    // anything that could escape data/calls/ via a path separator.
+    if (!callId || /[\\/]/.test(callId)) {
+      res.writeHead(400);
+      res.end("Invalid call id");
+      return;
+    }
+
+    let body = "";
+    for await (const chunk of req) body += chunk;
+
+    let patch: { outcome?: string };
+    try {
+      patch = JSON.parse(body);
+    } catch {
+      res.writeHead(400);
+      res.end("Invalid JSON body");
+      return;
+    }
+
+    if (patch.outcome === undefined || !EDITABLE_OUTCOMES.includes(patch.outcome)) {
+      res.writeHead(400);
+      res.end(`outcome must be one of: ${EDITABLE_OUTCOMES.join(", ")}`);
+      return;
+    }
+
+    await store.update(callId, { outcome: patch.outcome as CallRecord["outcome"] });
+    res.writeHead(204);
+    res.end();
     return;
   }
 
