@@ -1,11 +1,11 @@
+import WebSocket from "ws";
 import { required } from "../config.js";
 
-// UNVERIFIED: transcriptor's lib/transcribe.ts only exercises Speechmatics'
-// batch job API (POST /v2/jobs). This targets their realtime WS endpoint
-// instead, which a live call needs. Confirm against real audio before
-// trusting this: message framing, StartRecognition payload shape, and
-// whether melia-1 is actually available on the realtime endpoint are all
-// unconfirmed as of this scaffold.
+// Realtime WS endpoint. Server-side auth per Speechmatics docs: the API key goes in an
+// `Authorization: Bearer` header on the WS upgrade request — the `?jwt=`
+// query param is documented for browser/client-side use only (and the
+// native WebSocket global can't set custom headers anyway, same
+// restriction as a browser), hence the `ws` package here instead.
 const REALTIME_URL = "wss://eu2.rt.speechmatics.com/v2";
 
 export interface PartialTranscript {
@@ -18,31 +18,31 @@ export class SpeechmaticsRealtimeClient {
 
   async connect(onTranscript: (t: PartialTranscript) => void): Promise<void> {
     const apiKey = required("SPEECHMATICS_API_KEY");
-    this.socket = new WebSocket(`${REALTIME_URL}?jwt=${apiKey}`);
+    this.socket = new WebSocket(REALTIME_URL, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
 
-    this.socket.addEventListener("open", () => {
+    this.socket.on("open", () => {
       this.socket?.send(
         JSON.stringify({
           message: "StartRecognition",
           audio_format: { type: "raw", encoding: "pcm_s16le", sample_rate: 8000 },
           transcription_config: {
-            model: "melia-1",
-            // "enhanced" over the default "standard" operating point — this
-            // audio is 8kHz mu-law off the PBX, not studio-quality mic
-            // input, and enhanced handles that degradation meaningfully
-            // better. Still unverified end-to-end against real call audio.
-            operating_point: "enhanced",
+            // melia-1 is selected via operating_point directly, not a
+            // separate "model" field — the realtime API rejected that
+            // shape with "additional properties 'model'/'max_delay' not
+            // allowed" when first tried against a live call (2026-11-16).
+            operating_point: "melia-1",
             language: "multi",
             language_hints: ["ms", "en", "cmn"],
-            max_delay: 1,
             enable_partials: true,
           },
         }),
       );
     });
 
-    this.socket.addEventListener("message", (event) => {
-      const data = JSON.parse(typeof event.data === "string" ? event.data : "{}");
+    this.socket.on("message", (raw) => {
+      const data = JSON.parse(raw.toString());
       if (data.message === "AddPartialTranscript") {
         onTranscript({ text: data.metadata?.transcript ?? "", isFinal: false });
       } else if (data.message === "AddTranscript") {
@@ -52,13 +52,13 @@ export class SpeechmaticsRealtimeClient {
       }
     });
 
-    this.socket.addEventListener("error", (event) => {
-      console.error("[stt] WebSocket error:", event);
+    this.socket.on("error", (err) => {
+      console.error("[stt] WebSocket error:", err);
     });
 
-    this.socket.addEventListener("close", (event) => {
-      if (event.code !== 1000) {
-        console.warn(`[stt] WebSocket closed unexpectedly: code=${event.code} reason=${event.reason}`);
+    this.socket.on("close", (code, reason) => {
+      if (code !== 1000) {
+        console.warn(`[stt] WebSocket closed unexpectedly: code=${code} reason=${reason.toString()}`);
       }
     });
   }
