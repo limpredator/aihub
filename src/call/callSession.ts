@@ -303,8 +303,10 @@ function speakMulaw(rtp: RtpSession, pcm16le: Buffer): SpeechHandle {
 
   let cancelled = false;
   let timer: NodeJS.Timeout | null = null;
+  let resolveDone: () => void = () => {};
 
   const done = new Promise<void>((resolve) => {
+    resolveDone = resolve;
     // Schedule each frame against an absolute start time rather than chaining
     // setTimeout(fn, 20) off of itself — the chained version drifts by
     // whatever each tick's actual overhead is (event loop load, STT/LLM work
@@ -336,6 +338,12 @@ function speakMulaw(rtp: RtpSession, pcm16le: Buffer): SpeechHandle {
   const cancel = () => {
     cancelled = true;
     if (timer) clearTimeout(timer);
+    // Must resolve here, not rely on sendNext noticing `cancelled` — clearing
+    // the timer above means sendNext never runs again, so without this the
+    // `done` promise hung forever on every barge-in and deadlocked the whole
+    // call (seen live 2026-11-16: interrupting the AI mid-reply froze it with
+    // no further turns ever processed).
+    resolveDone();
   };
 
   return { done, cancel };
