@@ -26,6 +26,8 @@ export class RtpSession extends EventEmitter {
   private readonly remotePort: number;
 
   private readonly readyPromise: Promise<number>;
+  private packetsReceived = 0;
+  private watchdog: NodeJS.Timeout | null = null;
 
   constructor(opts: RtpSessionOptions) {
     super();
@@ -33,8 +35,25 @@ export class RtpSession extends EventEmitter {
     this.remotePort = opts.remotePort;
     this.socket = createSocket("udp4");
     this.socket.on("message", (msg) => this.handleInbound(msg));
+    this.socket.on("error", (err) => console.error("[rtp] socket error:", err));
     this.readyPromise = new Promise((resolve) => {
-      this.socket.once("listening", () => resolve(this.socket.address().port));
+      this.socket.once("listening", () => {
+        const { address, port } = this.socket.address();
+        console.log(`[rtp] listening on ${address}:${port}, expecting media from ${this.remoteAddress}:${this.remotePort}`);
+        // If the PBX/rtpengine can't reach us (bad SDP address, Windows
+        // Firewall blocking inbound UDP to node.exe, wrong NAT'd port, etc.)
+        // zero packets ever arrive — this makes that silent failure visible
+        // instead of looking identical to "caller just hasn't spoken yet".
+        this.watchdog = setTimeout(() => {
+          if (this.packetsReceived === 0) {
+            console.warn(
+              `[rtp] no inbound RTP packets received after 5s on ${address}:${port} — ` +
+                `check Windows Firewall allows inbound UDP to node.exe, and that the PBX/rtpengine can route to this address.`,
+            );
+          }
+        }, 5000);
+        resolve(port);
+      });
     });
     // localPort 0 lets the OS pick an ephemeral port — read it back via ready().
     this.socket.bind(opts.localPort);
@@ -47,6 +66,10 @@ export class RtpSession extends EventEmitter {
 
   private handleInbound(packet: Buffer): void {
     if (packet.length < 12) return;
+    this.packetsReceived++;
+    if (this.packetsReceived === 1) {
+      console.log("[rtp] first inbound packet received — media path is working");
+    }
     const payload = packet.subarray(12);
     this.emit("audio", payload);
   }
@@ -68,6 +91,7 @@ export class RtpSession extends EventEmitter {
   }
 
   close(): void {
+    if (this.watchdog) clearTimeout(this.watchdog);
     this.socket.close();
   }
 }

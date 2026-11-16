@@ -38,10 +38,13 @@ async function handleInvite(sip: SipClient, call: IncomingCall, store: CallRecor
   await store.create({ callId: call.callId, caller: call.callerId, startedAt: new Date() });
 
   const remote = parseOffer(call.remoteSdp);
+  console.log(`[call ${call.callId}] offer wants RTP sent to ${remote.address}:${remote.port}`);
   const rtp = new RtpSession({ localPort: 0, remoteAddress: remote.address, remotePort: remote.port });
   const localPort = await rtp.ready();
 
-  call.answer(buildAnswer({ localAddress: sip.getLocalAddress(), localPort }));
+  const localAddress = sip.getLocalAddress();
+  console.log(`[call ${call.callId}] answering with SDP address ${localAddress}:${localPort}`);
+  call.answer(buildAnswer({ localAddress, localPort }));
 
   const messages: ChatMessage[] = [{ role: "system", content: buildSystemPrompt(config.ringGroup.extensions) }];
 
