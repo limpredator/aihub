@@ -119,6 +119,18 @@ async function handleInvite(sip: SipClient, call: IncomingCall, store: CallRecor
   // quiet for a bit, joining anything buffered in the meantime.
   const pendingUtterance: string[] = [];
 
+  // Speechmatics detects language per word in multi-language mode, so this
+  // tracks whatever it last detected the caller speaking — used to pick a
+  // single matching closing line instead of reciting all three languages
+  // every time (asked for live, 2026-11-16).
+  let lastCallerLanguage: string | undefined;
+  const CLOSING_LINES: Record<string, string> = {
+    en: "Thank you, someone will contact you shortly.",
+    ms: "Terima kasih, kami akan menghubungi anda tidak lama lagi.",
+    cmn: "谢谢,我们会尽快联系您。",
+  };
+  const ALL_LANGUAGES_CLOSING_LINE = Object.values(CLOSING_LINES).join(" ");
+
   // Serializes turns so a debounce fire that lands while the previous
   // turn's LLM call or reply audio is still in flight queues behind it
   // instead of running concurrently — the other half of the "cross
@@ -155,10 +167,11 @@ async function handleInvite(sip: SipClient, call: IncomingCall, store: CallRecor
       // these two tool calls, but it doesn't always (seen live 2026-11-16:
       // call ended right on the take_message tool call, no reply text, so
       // the caller just heard the line go dead). Don't let a missed reply
-      // mean dead silence before hangup — say something in all three
-      // supported languages as a safety net.
+      // mean dead silence before hangup — say a closing line as a safety
+      // net, in whichever language we last detected the caller speaking,
+      // or all three if we never detected one.
       await speakReply(
-        "Thank you, someone will contact you shortly. Terima kasih, kami akan menghubungi anda tidak lama lagi. 谢谢,我们会尽快联系您。",
+        (lastCallerLanguage && CLOSING_LINES[lastCallerLanguage]) || ALL_LANGUAGES_CLOSING_LINE,
       );
     }
 
@@ -197,6 +210,10 @@ async function handleInvite(sip: SipClient, call: IncomingCall, store: CallRecor
     // before the AI responds but matches normal conversational thinking-pauses
     // better, and now resetting on partials too should absorb finalization lag.
     debounceTimer = setTimeout(scheduleTurn, 1800);
+
+    if (partial.language && partial.language in CLOSING_LINES) {
+      lastCallerLanguage = partial.language;
+    }
 
     if (partial.isFinal) {
       pendingUtterance.push(partial.text.trim());

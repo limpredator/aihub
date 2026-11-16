@@ -11,6 +11,12 @@ const REALTIME_URL = "wss://eu2.rt.speechmatics.com/v2";
 export interface PartialTranscript {
   text: string;
   isFinal: boolean;
+  /** Per-word language detected by melia-1 in multi-language mode (e.g. "en", "ms", "cmn") — the last word's, as a best guess for the whole utterance. */
+  language?: string;
+}
+
+interface SpeechmaticsResult {
+  alternatives?: { language?: string }[];
 }
 
 export class SpeechmaticsRealtimeClient {
@@ -51,10 +57,14 @@ export class SpeechmaticsRealtimeClient {
 
     this.socket.on("message", (raw) => {
       const data = JSON.parse(raw.toString());
-      if (data.message === "AddPartialTranscript") {
-        onTranscript({ text: data.metadata?.transcript ?? "", isFinal: false });
-      } else if (data.message === "AddTranscript") {
-        onTranscript({ text: data.metadata?.transcript ?? "", isFinal: true });
+      if (data.message === "AddPartialTranscript" || data.message === "AddTranscript") {
+        const results = data.results as SpeechmaticsResult[] | undefined;
+        const language = results?.length ? results[results.length - 1]?.alternatives?.[0]?.language : undefined;
+        onTranscript({
+          text: data.metadata?.transcript ?? "",
+          isFinal: data.message === "AddTranscript",
+          language,
+        });
       } else if (data.message === "Error") {
         console.error("[stt] Speechmatics rejected the session:", data.type, data.reason);
       }
