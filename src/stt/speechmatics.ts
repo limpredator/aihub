@@ -64,7 +64,13 @@ export class SpeechmaticsRealtimeClient {
   }
 
   sendAudio(chunk: Buffer): void {
-    this.socket?.send(chunk);
+    // RTP (and so audio) can start arriving before the WebSocket finishes
+    // connecting/handshaking — WebSocket.send() throws synchronously (not
+    // an "error" event) when called on a socket that isn't OPEN yet, which
+    // crashed the whole process on a live call (2026-11-16). Drop frames
+    // until the socket is actually open rather than losing the call.
+    if (this.socket?.readyState !== WebSocket.OPEN) return;
+    this.socket.send(chunk);
   }
 
   close(): void {
