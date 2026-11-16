@@ -51,9 +51,11 @@ async function handleInvite(sip: SipClient, call: IncomingCall, store: CallRecor
   // Guards against double cleanup when both a BYE and a tool-call/fail-open
   // path try to tear down the same call.
   let ended = false;
+  let debounceTimer: NodeJS.Timeout | null = null;
   const endMedia = () => {
     if (ended) return;
     ended = true;
+    if (debounceTimer) clearTimeout(debounceTimer);
     rtp.close();
     stt.close();
   };
@@ -69,12 +71,24 @@ async function handleInvite(sip: SipClient, call: IncomingCall, store: CallRecor
     }
   };
 
-  const stt = new SpeechmaticsRealtimeClient();
-  await stt.connect(async (partial) => {
-    if (!partial.isFinal || !partial.text.trim() || ended) return;
+  // Speechmatics emits a separate AddTranscript (final) per utterance boundary
+  // it detects internally, not one per caller turn — a mid-sentence pause
+  // splits what the caller meant as one thought into several finals (seen
+  // live 2026-11-16: "8." and "好啊一." arrived as two finals from what was
+  // almost certainly one sentence). Running the LLM on every final treats
+  // each fragment as the caller's whole turn, producing confused replies.
+  // Debounce: buffer finals and only run a turn once the caller's been
+  // quiet for a bit, joining anything buffered in the meantime.
+  const pendingUtterance: string[] = [];
 
-    console.log(`[call ${call.callId}] caller said: "${partial.text}"`);
-    messages.push({ role: "user", content: partial.text });
+  const runPendingTurn = async () => {
+    debounceTimer = null;
+    const text = pendingUtterance.join(" ").trim();
+    pendingUtterance.length = 0;
+    if (!text || ended) return;
+
+    console.log(`[call ${call.callId}] caller said: "${text}"`);
+    messages.push({ role: "user", content: text });
 
     let turn: Awaited<ReturnType<typeof runTurn>>;
     try {
@@ -91,6 +105,17 @@ async function handleInvite(sip: SipClient, call: IncomingCall, store: CallRecor
       console.log(`[call ${call.callId}] tool call: ${toolCall.function.name}(${toolCall.function.arguments})`);
       handleToolCall(sip, call, store, endMedia, toolCall);
     }
+  };
+
+  const stt = new SpeechmaticsRealtimeClient();
+  await stt.connect((partial) => {
+    if (!partial.isFinal || !partial.text.trim() || ended) return;
+
+    pendingUtterance.push(partial.text.trim());
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      runPendingTurn().catch((err) => console.error(`[call ${call.callId}] turn handling failed:`, err));
+    }, 900);
   });
 
   // Speak first so the caller (and whoever's testing) has immediate proof
