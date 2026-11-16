@@ -12,6 +12,8 @@ export interface CallRecord {
   endedAt?: Date;
   /** Full turn-by-turn conversation, written once the call ends. */
   transcript?: string;
+  /** Short LLM-generated summary of what the caller wanted and what to do next, written once the call ends. */
+  summary?: string;
   /** The message text handed to take_message, when the outcome is message_taken. */
   message?: string;
   outcome?: "routed" | "message_taken" | "fallback" | "hangup";

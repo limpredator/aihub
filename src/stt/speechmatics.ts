@@ -15,8 +15,16 @@ export interface PartialTranscript {
 
 export class SpeechmaticsRealtimeClient {
   private socket: WebSocket | null = null;
+  private closedByUs = false;
 
-  async connect(onTranscript: (t: PartialTranscript) => void): Promise<void> {
+  /**
+   * `onDisconnected` fires if the socket closes for any reason other than us
+   * calling close() ourselves. Without it, a dropped connection (seen live
+   * 2026-11-16: code 1005, no reason given) left sendAudio() silently
+   * discarding every further audio frame — no transcripts, no LLM turns, no
+   * reply, just the caller stuck in silence until they gave up and hung up.
+   */
+  async connect(onTranscript: (t: PartialTranscript) => void, onDisconnected: () => void): Promise<void> {
     const apiKey = required("SPEECHMATICS_API_KEY");
     this.socket = new WebSocket(REALTIME_URL, {
       headers: { Authorization: `Bearer ${apiKey}` },
@@ -57,8 +65,9 @@ export class SpeechmaticsRealtimeClient {
     });
 
     this.socket.on("close", (code, reason) => {
-      if (code !== 1000) {
+      if (code !== 1000 && !this.closedByUs) {
         console.warn(`[stt] WebSocket closed unexpectedly: code=${code} reason=${reason.toString()}`);
+        onDisconnected();
       }
     });
   }
@@ -74,6 +83,7 @@ export class SpeechmaticsRealtimeClient {
   }
 
   close(): void {
+    this.closedByUs = true;
     this.socket?.close();
     this.socket = null;
   }

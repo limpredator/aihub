@@ -3,7 +3,7 @@ import { RtpSession } from "../media/rtpSession.js";
 import { parseOffer, buildAnswer } from "../media/sdp.js";
 import { encodeMulaw, decodeMulaw } from "../media/g711.js";
 import { SpeechmaticsRealtimeClient } from "../stt/speechmatics.js";
-import { runTurn, type ChatMessage } from "../llm/openrouter.js";
+import { runTurn, summarizeTranscript, type ChatMessage } from "../llm/openrouter.js";
 import { buildSystemPrompt } from "../llm/prompt.js";
 import { ElevenLabsTtsClient, UnconfiguredTtsClient, type TtsClient } from "../tts/ttsClient.js";
 import type { CallRecordStore } from "../callStore/callRecordStore.js";
@@ -66,6 +66,18 @@ async function handleInvite(sip: SipClient, call: IncomingCall, store: CallRecor
       .map((m) => `${m.role === "user" ? "caller" : "ai"}: ${m.content}`)
       .join("\n");
     store.update(call.callId, { transcript }).catch(() => {});
+
+    // Fire-and-forget: a summary is a nice-to-have for the dashboard, not
+    // something anything else waits on, and it matters most on exactly the
+    // calls that have no other structured record — a hangup before
+    // take_message was ever called still has useful details buried in the
+    // transcript (seen live 2026-11-16: name/company request was still
+    // pending when the caller hung up, with their phone number already given).
+    if (messages.some((m) => m.role === "user")) {
+      summarizeTranscript(transcript)
+        .then((summary) => store.update(call.callId, { summary }))
+        .catch((err) => console.error(`[call ${call.callId}] summary generation failed:`, err));
+    }
   };
 
   // Set while a reply's audio is being sent out, so a burst of new caller
@@ -152,7 +164,8 @@ async function handleInvite(sip: SipClient, call: IncomingCall, store: CallRecor
   };
 
   const stt = new SpeechmaticsRealtimeClient();
-  await stt.connect((partial) => {
+  await stt.connect(
+    (partial) => {
     if (ended || !partial.text.trim()) return;
 
     // Barge-in: the caller started talking again while a reply was still
@@ -183,7 +196,18 @@ async function handleInvite(sip: SipClient, call: IncomingCall, store: CallRecor
     if (partial.isFinal) {
       pendingUtterance.push(partial.text.trim());
     }
-  });
+    },
+    () => {
+      // The STT connection dropped out from under us mid-call (seen live
+      // 2026-11-16, Speechmatics close code 1005) — without this, sendAudio()
+      // keeps silently discarding frames forever and the caller just sits in
+      // silence. The AI can't function without transcripts, so hand off to a
+      // human instead of leaving them stuck.
+      if (ended) return;
+      console.error(`[call ${call.callId}] STT connection dropped unexpectedly — falling back to human.`);
+      failOpen(sip, call, store, endMedia);
+    },
+  );
 
   // Speak first so the caller (and whoever's testing) has immediate proof
   // the call connected, instead of silence until they happen to say
