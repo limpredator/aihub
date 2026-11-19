@@ -11,6 +11,7 @@ import type { CallRecord } from "../callStore/callRecordStore.js";
 import { FileCallRecordStore } from "../callStore/callRecordStore.js";
 import { loadTenantConfig, saveTenantConfig, type TenantConfig } from "../config/tenantConfig.js";
 import { draftTenantConfigFromText, extractTextFromPdf, extractTextFromPptx, extractTextFromUrl } from "../config/importSource.js";
+import { attachTestCallHandling } from "../call/testCallSession.js";
 
 const CALLS_DIR = join(process.cwd(), "data", "calls");
 const PORT = Number(process.env.DASHBOARD_PORT || 3900);
@@ -219,6 +220,8 @@ const server = createServer(async (req, res) => {
   res.writeHead(404);
   res.end("Not found");
 });
+
+attachTestCallHandling(server, store);
 
 server.listen(PORT, () => {
   console.log(`[dashboard] call dashboard listening on http://localhost:${PORT}`);

@@ -64,6 +64,13 @@
   }
   #profile-btn:hover { background: var(--accent-weak); color: var(--accent); border-color: var(--accent); }
   #profile-btn svg { width: 17px; height: 17px; }
+  #test-btn {
+    display: flex; align-items: center; justify-content: center;
+    width: 34px; height: 34px; border-radius: 9px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text-dim); cursor: pointer; flex-shrink: 0;
+  }
+  #test-btn:hover { background: var(--accent-weak); color: var(--accent); border-color: var(--accent); }
+  #test-btn svg { width: 17px; height: 17px; }
   header .brand .dot {
     width: 9px; height: 9px; border-radius: 50%;
     background: #22c55e; box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.18);
@@ -206,6 +213,8 @@
   .bubble.ai { align-self: flex-start; background: var(--bg); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
   .bubble.caller { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
   .bubble .who { display: block; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; opacity: .6; margin-bottom: 2px; }
+  .bubble.partial { opacity: .55; }
+  #test-transcript { min-height: 120px; max-height: 50vh; overflow-y: auto; padding: 4px 2px; }
 
   .form-field { margin-bottom: 16px; }
   .form-field label { display: block; font-size: 11px; font-weight: 600; color: var(--text-faint); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 6px; }
@@ -284,6 +293,9 @@
     </button>
     <button id="profile-btn" title="Company profile">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18"/><path d="M5 21V7l8-4 8 4v14"/><path d="M9 9h1m4 0h1M9 13h1m4 0h1M9 17h1m4 0h1"/></svg>
+    </button>
+    <button id="test-btn" title="Test call console">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
     </button>
     <span class="dot"></span>
     <div>
@@ -451,6 +463,7 @@ function render() {
         </div>
         <div class="preview">${escapeHtml(c.summary || c.message || "No summary yet")}</div>
         <span class="pill ${badgeClass(c.outcome)}">${outcomeLabel(c.outcome)}</span>
+        ${c.source === "test" ? '<span class="pill" style="margin-left:6px; background:var(--accent-weak); color:var(--accent);">Test</span>' : ""}
       </div>
     </div>
   `).join("");
@@ -595,6 +608,216 @@ function renderDetail() {
       alert("Failed to update follow-up status: " + err.message);
     }
   });
+}
+
+// --- Test call console: talk to the agent live via mic/speaker, no phone
+// network involved. Audio both ways is raw PCM16LE @ 8kHz mono over a
+// single WebSocket — the same format Speechmatics/ElevenLabs already use
+// server-side (see src/call/testCallSession.ts), so no server-side codec
+// work was needed; the browser does the mic resampling and output pacing.
+let testSocket = null;
+let testAudioCtx = null;
+let testStream = null;
+let testProcessor = null;
+let testSource = null;
+let testActive = false;
+let testPlayHead = 0;
+let testPlayingSources = [];
+let testLivePartialBubble = null;
+
+function renderTest() {
+  const detailEl = document.getElementById("detail");
+  detailEl.innerHTML = `
+    <div class="inner">
+      <div class="detail-head"><div><h2>Test call console</h2><div class="meta-line">Talk to this agent live, right in the browser — no phone network involved.</div></div></div>
+      <div class="card">
+        <div style="display:flex; align-items:center; gap: 12px; margin-bottom: 14px;">
+          <button type="button" class="btn-primary" id="test-toggle">Start test call</button>
+          <span id="test-status" style="color: var(--text-faint); font-size: 13px;">Idle</span>
+        </div>
+        <div class="transcript" id="test-transcript"></div>
+      </div>
+    </div>
+  `;
+  document.getElementById("test-toggle").addEventListener("click", toggleTestCall);
+}
+
+function setTestStatus(text) {
+  const el = document.getElementById("test-status");
+  if (el) el.textContent = text;
+}
+
+function appendOrUpdateBubble(role, text, existingEl, isFinal) {
+  const container = document.getElementById("test-transcript");
+  if (!container) return null;
+  if (existingEl && existingEl.parentNode === container) {
+    existingEl.lastChild.textContent = text;
+    existingEl.classList.toggle("partial", !isFinal);
+    return existingEl;
+  }
+  const div = document.createElement("div");
+  div.className = "bubble " + (role === "caller" ? "caller" : "ai") + (isFinal ? "" : " partial");
+  div.innerHTML = `<span class="who">${role === "caller" ? "Caller (you)" : "AI"}</span>`;
+  div.appendChild(document.createTextNode(text));
+  container.appendChild(div);
+  container.scrollTop = container.scrollHeight;
+  return div;
+}
+
+function downsampleTo8k(input, inputRate) {
+  if (inputRate === 8000) return float32ToInt16(input);
+  const ratio = inputRate / 8000;
+  const outLength = Math.floor(input.length / ratio);
+  const out = new Int16Array(outLength);
+  for (let i = 0; i < outLength; i++) {
+    const srcIndex = i * ratio;
+    const i0 = Math.floor(srcIndex);
+    const i1 = Math.min(i0 + 1, input.length - 1);
+    const frac = srcIndex - i0;
+    const sample = input[i0] * (1 - frac) + input[i1] * frac;
+    out[i] = Math.max(-32768, Math.min(32767, Math.round(sample * 32768)));
+  }
+  return out;
+}
+
+function float32ToInt16(input) {
+  const out = new Int16Array(input.length);
+  for (let i = 0; i < input.length; i++) {
+    out[i] = Math.max(-32768, Math.min(32767, Math.round(input[i] * 32768)));
+  }
+  return out;
+}
+
+function playTestAudioChunk(arrayBuffer) {
+  if (!testAudioCtx) return;
+  const int16 = new Int16Array(arrayBuffer);
+  const float32 = new Float32Array(int16.length);
+  for (let i = 0; i < int16.length; i++) float32[i] = int16[i] / 32768;
+  const buffer = testAudioCtx.createBuffer(1, float32.length, 8000);
+  if (buffer.copyToChannel) buffer.copyToChannel(float32, 0);
+  else buffer.getChannelData(0).set(float32);
+  const src = testAudioCtx.createBufferSource();
+  src.buffer = buffer;
+  src.connect(testAudioCtx.destination);
+  const startAt = Math.max(testAudioCtx.currentTime, testPlayHead);
+  src.start(startAt);
+  testPlayHead = startAt + buffer.duration;
+  testPlayingSources.push(src);
+  src.onended = () => {
+    testPlayingSources = testPlayingSources.filter((s) => s !== src);
+  };
+}
+
+function stopTestPlayback() {
+  testPlayingSources.forEach((s) => {
+    try { s.stop(); } catch { /* already stopped */ }
+  });
+  testPlayingSources = [];
+  if (testAudioCtx) testPlayHead = testAudioCtx.currentTime;
+}
+
+function handleTestServerMessage(ev) {
+  if (typeof ev.data === "string") {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch { return; }
+    if (msg.type === "status") {
+      setTestStatus(msg.text);
+    } else if (msg.type === "transcript") {
+      if (msg.role === "caller") {
+        if (!msg.text.trim()) return;
+        const div = appendOrUpdateBubble("caller", msg.text, testLivePartialBubble, msg.isFinal);
+        testLivePartialBubble = msg.isFinal ? null : div;
+      } else {
+        testLivePartialBubble = null;
+        appendOrUpdateBubble("ai", msg.text, null, true);
+      }
+    } else if (msg.type === "cancel") {
+      stopTestPlayback();
+    } else if (msg.type === "ended") {
+      setTestStatus("Call ended (" + msg.reason.replace(/_/g, " ") + ").");
+      stopTestCall();
+    }
+  } else {
+    playTestAudioChunk(ev.data);
+  }
+}
+
+async function startTestCall() {
+  try {
+    testStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (err) {
+    setTestStatus("Microphone permission denied.");
+    return;
+  }
+
+  testAudioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  testPlayHead = testAudioCtx.currentTime;
+  testPlayingSources = [];
+  testActive = true;
+
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  testSocket = new WebSocket(`${proto}//${location.host}/api/test-call`);
+  testSocket.binaryType = "arraybuffer";
+
+  testSocket.addEventListener("message", handleTestServerMessage);
+  testSocket.addEventListener("close", () => {
+    if (testActive) stopTestCall();
+  });
+  testSocket.addEventListener("error", () => {
+    setTestStatus("Connection error.");
+  });
+
+  testSocket.addEventListener("open", () => {
+    setTestStatus("Connected — say something.");
+    document.getElementById("test-toggle").textContent = "Hang up";
+
+    testSource = testAudioCtx.createMediaStreamSource(testStream);
+    testProcessor = testAudioCtx.createScriptProcessor(2048, 1, 1);
+    const inRate = testAudioCtx.sampleRate;
+    testProcessor.onaudioprocess = (e) => {
+      if (!testActive || testSocket.readyState !== WebSocket.OPEN) return;
+      const input = e.inputBuffer.getChannelData(0);
+      const pcm = downsampleTo8k(input, inRate);
+      testSocket.send(pcm.buffer);
+    };
+    // onaudioprocess only fires once the node is connected through to a
+    // destination — route it through a muted gain so the mic is never
+    // actually played back out loud (that would feed back into itself).
+    const muteGain = testAudioCtx.createGain();
+    muteGain.gain.value = 0;
+    testSource.connect(testProcessor);
+    testProcessor.connect(muteGain);
+    muteGain.connect(testAudioCtx.destination);
+  });
+}
+
+function stopTestCall() {
+  testActive = false;
+  if (testSocket && testSocket.readyState === WebSocket.OPEN) {
+    try { testSocket.send(JSON.stringify({ type: "hangup" })); } catch { /* closing anyway */ }
+  }
+  if (testSocket) { try { testSocket.close(); } catch { /* already closed */ } }
+  testSocket = null;
+  stopTestPlayback();
+  if (testProcessor) { testProcessor.disconnect(); testProcessor = null; }
+  if (testSource) { testSource.disconnect(); testSource = null; }
+  if (testStream) { testStream.getTracks().forEach((t) => t.stop()); testStream = null; }
+  if (testAudioCtx) { testAudioCtx.close().catch(() => {}); testAudioCtx = null; }
+  const btn = document.getElementById("test-toggle");
+  if (btn) btn.textContent = "Start test call";
+}
+
+function toggleTestCall() {
+  if (testActive) {
+    stopTestCall();
+    setTestStatus("Call ended.");
+    return;
+  }
+  const transcriptEl = document.getElementById("test-transcript");
+  if (transcriptEl) transcriptEl.innerHTML = "";
+  testLivePartialBubble = null;
+  setTestStatus("Connecting…");
+  startTestCall();
 }
 
 async function renderProfile() {
@@ -751,6 +974,11 @@ document.getElementById("home-btn").addEventListener("click", () => {
   selectedId = null;
   render();
   renderHome();
+});
+
+document.getElementById("test-btn").addEventListener("click", () => {
+  currentView = "test";
+  renderTest();
 });
 
 document.getElementById("profile-btn").addEventListener("click", () => {

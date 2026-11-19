@@ -24,7 +24,10 @@ function buildTtsClient(): TtsClient {
   return new UnconfiguredTtsClient();
 }
 
-const tts = buildTtsClient();
+// Exported so the browser test-call console (testCallSession.ts) talks to
+// the same configured TTS vendor a real call uses, instead of constructing
+// (and needing to configure) a second client.
+export const tts = buildTtsClient();
 
 export function attachCallHandling(sip: SipClient, store: CallRecordStore): void {
   sip.on("invite", (call) => {

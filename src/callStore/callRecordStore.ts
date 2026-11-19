@@ -20,6 +20,8 @@ export interface CallRecord {
   routedTo?: string;
   /** Whether staff has acted on a message/lead yet — set from the dashboard, never by the call-handling code. */
   followUpStatus?: "pending" | "contacted" | "done";
+  /** "test" for a browser test-call console session; absent/undefined means a real phone call. */
+  source?: "test";
 }
 
 export interface CallRecordStore {
