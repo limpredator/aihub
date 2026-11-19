@@ -30,7 +30,11 @@ export class SpeechmaticsRealtimeClient {
    * discarding every further audio frame — no transcripts, no LLM turns, no
    * reply, just the caller stuck in silence until they gave up and hung up.
    */
-  async connect(onTranscript: (t: PartialTranscript) => void, onDisconnected: () => void): Promise<void> {
+  async connect(
+    onTranscript: (t: PartialTranscript) => void,
+    onDisconnected: () => void,
+    additionalVocab: string[] = [],
+  ): Promise<void> {
     const apiKey = required("SPEECHMATICS_API_KEY");
     this.socket = new WebSocket(REALTIME_URL, {
       headers: { Authorization: `Bearer ${apiKey}` },
@@ -50,6 +54,12 @@ export class SpeechmaticsRealtimeClient {
             language: "multi",
             language_hints: ["ms", "en", "cmn"],
             enable_partials: true,
+            // Biases recognition toward tenant-specific jargon/product codes
+            // (e.g. "IP-PABX", "CD20") that a general model mis-hears
+            // otherwise — see src/stt/vocab.ts for how this list is built.
+            ...(additionalVocab.length > 0
+              ? { additional_vocab: additionalVocab.map((content) => ({ content })) }
+              : {}),
           },
         }),
       );

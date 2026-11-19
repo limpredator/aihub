@@ -3,6 +3,7 @@ import { RtpSession } from "../media/rtpSession.js";
 import { parseOffer, buildAnswer } from "../media/sdp.js";
 import { encodeMulaw, decodeMulaw } from "../media/g711.js";
 import { SpeechmaticsRealtimeClient } from "../stt/speechmatics.js";
+import { extractVocabTerms } from "../stt/vocab.js";
 import { runTurn, summarizeTranscript, type ChatMessage } from "../llm/openrouter.js";
 import { buildSystemPrompt } from "../llm/prompt.js";
 import { loadTenantConfig } from "../config/tenantConfig.js";
@@ -234,6 +235,7 @@ async function handleInvite(sip: SipClient, call: IncomingCall, store: CallRecor
       console.error(`[call ${call.callId}] STT connection dropped unexpectedly — falling back to human.`);
       failOpen(sip, call, store, endMedia);
     },
+    extractVocabTerms(tenantConfig),
   );
 
   // Speak first so the caller (and whoever's testing) has immediate proof
